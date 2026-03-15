@@ -50,7 +50,7 @@ docker images
 
 This should output something like this:
 
-```
+```text
 REPOSITORY            TAG         IMAGE ID            CREATED             SIZE
 ageron/handson-mlp    cpu         3ebafebc604a        2 minutes ago       2.09GB
 ```
@@ -75,5 +75,34 @@ You can close the server by pressing `Ctrl-C` in the terminal window.
 
 This will remove the container so you can start a new one later (but it will not remove the image or the notebooks, don't worry!).
 
+## Use this repo as a VS Code devcontainer
+
+If you prefer to work directly in VS Code instead of starting Jupyter Lab manually, this repository now includes two devcontainer configurations:
+
+- `.devcontainer/cpu/devcontainer.json`: builds the local CPU image with `PT_VARIANT=cpu`
+- `.devcontainer/gpu/devcontainer.json`: builds the local CUDA 12.6 image with `PT_VARIANT=cu126` and starts the container with `--gpus=all`
+
+Both configurations:
+
+- build directly from this repository's `docker/Dockerfile`
+- build against `linux/amd64`, which is the correct target for standard Windows and WSL 2 Nvidia setups
+- pin Python 3.12 and install `git` so VS Code source control and notebook kernels work in the container
+- register a `Python (handson-mlp)` kernel for notebooks
+- install a small set of useful VS Code extensions in the container, including Python, Jupyter, GitHub Copilot, and GitHub Copilot Chat
+- keep the image's default Jupyter Lab command disabled, since VS Code connects directly to the container and runs notebooks itself
+
+This is slower than reusing a prebuilt image the first time, but it ensures that Docker produces a native `linux/amd64` container for Windows and WSL 2 hosts instead of accidentally reusing an incompatible architecture.
+
+### Open the devcontainer in VS Code
+
+1. Open this repository in VS Code.
+2. Make sure the local `Dev Containers` extension is installed.
+3. Run `Dev Containers: Reopen in Container` from the Command Palette.
+4. Select either `handson-mlp (CPU)` or `handson-mlp (GPU CUDA 12.6)`.
+5. Wait for the initial container build to finish, then open any notebook and select the `Python (handson-mlp)` kernel if VS Code prompts you.
+
+Use the CPU devcontainer on machines without an Nvidia GPU. Use the GPU devcontainer only on systems where `docker run --gpus all ...` already works, such as Docker Desktop with WSL 2 GPU support on Windows.
+
 Have fun!
 
+The manual Docker workflow above still works if you prefer to launch Jupyter Lab in the browser instead of using VS Code's notebook UI.

@@ -1,0 +1,43 @@
+{
+  "name": "handson-mlp (CPU)",
+  "build": {
+    "dockerfile": "../../docker/Dockerfile",
+    "context": "../..",
+    "options": [
+      "--pull"
+    ],
+    "args": {
+      "PT_VARIANT": "cpu"
+    }
+  },
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "overrideCommand": true,
+  "init": true,
+  "userEnvProbe": "none",
+  "runArgs": [
+    "--shm-size=1g"
+  ],
+  "containerUser": "root",
+  "remoteUser": "root",
+  "remoteEnv": {
+    "PATH": "/root/.local/bin:/opt/venvs/handson-mlp/bin:${containerEnv:PATH}"
+  },
+  "postCreateCommand": "sh .devcontainer/scripts/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venvs/handson-mlp/bin/python",
+        "python.terminal.activateEnvironment": false,
+        "jupyter.notebookFileRoot": "${containerWorkspaceFolder}"
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "ms-toolsai.jupyter-renderers",
+        "GitHub.copilot",
+        "GitHub.copilot-chat"
+      ]
+    }
+  }
+}

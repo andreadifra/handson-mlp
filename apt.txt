@@ -2,4 +2,6 @@ build-essential
 ca-certificates
 cmake
 curl
+git
+procps
 sudo
