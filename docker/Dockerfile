@@ -1,4 +1,4 @@
-FROM debian:trixie-slim
+FROM debian:trixie-slim AS devcontainer-base
 
 WORKDIR /content
 
@@ -16,24 +16,27 @@ ENV PYTHON_VERSION=3.12
 ARG PT_VARIANT=cpu
 ENV PT_VARIANT=${PT_VARIANT}
 
-RUN apt-get update && \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    apt-get update && \
     tr -d '\r' < apt.txt | xargs apt-get install -y --no-install-recommends && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     uv python install $PYTHON_VERSION && \
     uv venv --python $PYTHON_VERSION $VIRTUAL_ENV && \
-    uv sync --active --frozen && \
-    uv add --active swig && \
-    uv add --active box2d-py && \
-    uv remove --active swig
+    uv sync --active --frozen
 
-RUN \
+FROM devcontainer-base AS devcontainer-smoke
+
+EXPOSE 8888
+
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
+
+FROM devcontainer-base AS devcontainer
+
+RUN --mount=type=cache,target=/root/.cache/uv \
     echo "PyTorch Variant = ${PT_VARIANT}" && \
-    uv pip uninstall torch torchvision torchaudio && \
-    UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 uv pip install torch torchvision torchaudio \
-        --index-url https://download.pytorch.org/whl/${PT_VARIANT} && \
-    apt-get purge -y build-essential cmake && \
+    UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 uv sync --active --frozen --extra ${PT_VARIANT} && \
+    apt-get purge -y build-essential cmake swig && \
     apt-get autoremove -y && \
-    uv cache clean && \
     rm -rf /var/lib/apt/lists/* && \
     echo 'Success'
 

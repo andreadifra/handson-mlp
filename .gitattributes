@@ -1,0 +1,18 @@
+# Normalize line endings and treat binaries correctly
+* text=auto
+
+# Force LF for scripts & common source files (use LF in the container)
+*.sh    eol=lf
+*.py    eol=lf
+*.md    eol=lf
+*.yml   eol=lf
+*.yaml  eol=lf
+*.json  eol=lf
+*.ipynb eol=lf
+
+# Images / binaries
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary

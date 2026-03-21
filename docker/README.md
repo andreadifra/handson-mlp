@@ -38,9 +38,19 @@ docker build -t ageron/handson-mlp:cpu -f docker/Dockerfile --build-arg PT_VARIA
 
 If you want to build the Nvidia CUDA 12.6 variant, replace `cpu` with `cu126`. In the commands below, I'll use `cpu`, but you can replace `cpu` with the appropriate variant for your hardware.
 
+If you only want to validate that the container definition still builds without waiting for the full PyTorch stack, use the smoke target:
+
+```bash
+docker build --target devcontainer-smoke -f docker/Dockerfile .
+```
+
+The smoke target installs the base environment but skips the PyTorch-dependent packages, so it is much faster than a full CPU or CUDA build.
+
 > NOTE: You can see the list of available variants by visiting [PyTorch's download page](https://pytorch.org/get-started/locally/) and selecting Linux (even if you are on Windows or MacOS).
 
 This will take quite a while and download gigabytes of data, but it is only required once.
+
+Subsequent builds should be faster because the Dockerfile now lets BuildKit reuse uv's download cache across builds.
 
 After the process is finished you have an `ageron/handson-mlp:cpu` image (or `:cu126`): it will be the base for your experiments. You can confirm that by running the following command:
 
@@ -102,6 +112,36 @@ This is slower than reusing a prebuilt image the first time, but it ensures that
 5. Wait for the initial container build to finish, then open any notebook and select the `Python (handson-mlp)` kernel if VS Code prompts you.
 
 Use the CPU devcontainer on machines without an Nvidia GPU. Use the GPU devcontainer only on systems where `docker run --gpus all ...` already works, such as Docker Desktop with WSL 2 GPU support on Windows.
+
+### Clean up stale Docker artifacts
+
+Dev Containers creates BuildKit cache entries and `vsc-...` helper images as part of its normal build flow. If you rebuild often, these can accumulate and consume a lot of disk space even when they point at the same layers.
+
+To remove reclaimable build cache:
+
+```bash
+docker buildx prune -f
+```
+
+To remove stopped containers:
+
+```bash
+docker container prune -f
+```
+
+To remove dangling images:
+
+```bash
+docker image prune -f
+```
+
+If you want a more aggressive cleanup of anything not currently used by a running container:
+
+```bash
+docker system prune -af
+```
+
+Run the aggressive cleanup only when you are okay with Docker rebuilding cached layers again later.
 
 Have fun!
 

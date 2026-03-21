@@ -4,7 +4,8 @@
     "dockerfile": "../../docker/Dockerfile",
     "context": "../..",
     "options": [
-      "--pull"
+      "-t",
+      "handson-mlp-devcontainer:cpu"
     ],
     "args": {
       "PT_VARIANT": "cpu"
@@ -17,10 +18,17 @@
   "runArgs": [
     "--shm-size=1g"
   ],
+  "mounts": [
+		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude/skills,target=/root/.claude/skills,type=bind,readonly",
+		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.agents/skills,type=bind,readonly"
+	],
   "containerUser": "root",
   "remoteUser": "root",
   "remoteEnv": {
     "PATH": "/root/.local/bin:/opt/venvs/handson-mlp/bin:${containerEnv:PATH}"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
   },
   "postCreateCommand": "sh .devcontainer/scripts/post-create.sh",
   "customizations": {
@@ -35,7 +43,6 @@
         "ms-python.vscode-pylance",
         "ms-toolsai.jupyter",
         "ms-toolsai.jupyter-renderers",
-        "GitHub.copilot",
         "GitHub.copilot-chat"
       ]
     }
