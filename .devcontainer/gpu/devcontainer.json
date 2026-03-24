@@ -17,7 +17,7 @@
   "userEnvProbe": "none",
   "runArgs": [
     "--gpus=all",
-    "--shm-size=1g"
+    "--shm-size=2g"
   ],
   "mounts": [
 		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude/skills,target=/root/.claude/skills,type=bind,readonly",
