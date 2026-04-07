@@ -2,8 +2,7 @@
 
 ## General
 
-- [ ] Revise how backpropagation works in neural networks.
-- [ ] .
+- [ ] Revise how backpropagation works in neural networks and make notes
 
 ## PyTorch
 
@@ -14,6 +13,8 @@
 # Pick-up
 - [x] Explore * unpacking 
 - [x] Try debugger with PyTorch code
+- [ ] For question on hyperparameter tuning, try Optuna on a small model and dataset and add database so that you can visualize the search history in the Optuna dashboard.
+- [ ] Go through [Making Deep Learning go Brrrr](https://www.youtube.com/watch?v=WqLKfta5Ijw) and make notes
 
 # Book Questions
 
@@ -42,9 +43,17 @@ A few important caveats about in-place ops:
 **Documentation:** The convention is explained in the PyTorch docs here:
 👉 https://pytorch.org/docs/stable/notes/autograd.html#in-place-operations-with-autograd
 
+## 12. What is the difference between `torch.jit.trace` and `torch.jit.script`?
+
+`torch.jit.trace` goes through a model a few times with example inputs and records the operations it sees. It creates a static graph that can be optimized and run efficiently, but it only captures the operations that were executed during tracing. If your model has dynamic control flow (like `if` statements or loops that depend on input data), `torch.jit.trace` won't capture that logic correctly.
+
+`torch.jit.script`, on the other hand, analyses the code of the model directly, and is able to handle dynamic behaviour. It can capture the full logic of the model, including control flow, but it requires that your code be written in a way that is compatible with TorchScript. This means you may need to avoid certain Python features or use special annotations.
+
+- Requires *static types*, i.e needs to know that `x` is a `torch.Tensor` and not some arbitrary Python object, and that `x` has a certain shape and dtype. This can be a barrier for some dynamic models.
+
 # Notes 
 
-### Why do we move the optimizer to the GPU?
+## Why do we move the optimizer to the GPU?
 
 We keep the optimizer state on the GPU so it can update the model without crossing devices on every training step. Optimizers such as SGD with momentum and Adam store extra tensors, such as momentum buffers or first and second moment estimates. If the model parameters and gradients are on the GPU but the optimizer state is on the CPU, `optimizer.step()` either becomes slow because of repeated CPU-GPU transfers or fails with a device mismatch.
 
@@ -61,11 +70,11 @@ PyTorch nuance: you usually move the model to the GPU first, then create the opt
 
 ![why_optimizer_on_gpu](images/why_optimizer_on_gpu.excalidraw.png)
 
-### Optuna
+## Optuna
 
 Optuna is a hyperparameter search library. In this notebook, it automates the question: "which learning rate and hidden-layer size give the best validation accuracy?" Instead of trying values by hand, you define a search space and an evaluation function, and Optuna keeps launching experiments until it finds a strong configuration.
 
-![Optuna search loop](images/optuna_search_loop.excalidraw)
+![Optuna search loop](images/optuna_search_loop.excalidraw.png)
 
 
 The main Optuna terms in this chapter are:
@@ -125,8 +134,6 @@ The object returned by `create_study()` is useful after optimization, not just d
 The second notebook version adds pruning, which changes the structure a bit:
 
 ![Optuna pruning loop](images/optuna_trial_pruning.excalidraw.svg)
-
-Editable diagram source: [optuna_trial_pruning.excalidraw](images/optuna_trial_pruning.excalidraw)
 
 ```python
 def objective(trial, train_loader, valid_loader):
@@ -213,3 +220,53 @@ That structure is the part to remember:
 
 One final mental model: Optuna does not train a single model better and better. It trains many separate models with different hyperparameters, compares them, and remembers which hyperparameters produced the best validation result.
 
+## Torch Compile
+
+Since PyTorch 2.0, `torch.compile()` is a new feature that can speed up a model's execution by optimizing the underlying code. It works by tracing the operations in your model and generating optimized code for them.
+
+The main benefits of `torch.compile()` are:
+  - **Fusion**: it can combine multiple operations into one, reducing overhead.
+  - **Graph capture**: it can analyze the computation graph and optimize it globally.
+
+Speedups are most noticeable when a large portion of the GPU is being used. This can be achieved by:
+  - **Increasing the batch size** - More samples per batch means more samples on the GPU, for example, using a batch size of 256 instead of 32.
+  - **Increasing data size** - For example, using larger image size, 224x224 instead of 32x32. A larger data size means that more tensor operations will be happening on the GPU.
+  - **Increasing model size** - For example, using a larger model such as ResNet101 instead of ResNet50. A larger model means that more tensor operations will be happening on the GPU.
+  - **Decreasing data transfer** - For example, setting up all your tensors to be on GPU memory, this minimizes the amount of data transfer between the CPU and GPU.
+  
+How to check available GPU memory:
+```python
+import torch
+
+# Check available GPU memory and total GPU memory 
+total_free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+print(f"Total free GPU memory: {round(total_free_gpu_memory * 1e-9, 3)} GB")
+print(f"Total GPU memory: {round(total_gpu_memory * 1e-9, 3)} GB")
+```
+
+For my NVIDIA GeForce RTX 4070 Super, I get the following output:
+```text
+Total free GPU memory: 11.525 GB
+Total GPU memory: 12.878 GB
+```
+
+### Using torch.compile()
+To use `torch.compile()`, you simply wrap your model with it before training:
+
+```python
+# 1. Create model
+model = ImageClassifier(n_inputs=784, n_hidden1=300, n_hidden2=100, n_classes=10).to(device)
+
+# 2. Compile model (The Magic Line)
+# 'reduce-overhead' is great for small/medium models, but not necessary
+optimized_model = torch.compile(model, mode="reduce-overhead")
+
+# 3. Train the optimized version
+_ = train2(optimized_model, optimizer, xentropy, accuracy, train_loader , valid_loader, n_epochs)
+```
+
+**Tip**: When using `torch.compile()`, try to avoid "Graph Breaks." These happen when you put a `print()` statement or a non-PyTorch library (like scipy) right in the middle of your forward pass. Every time the compiler hits a `print()`, it has to "break" the optimized graph, go back to slow Python, and then restart the graph, which eats your performance gains.
+
+Resources:
+- [PyTorch 2.0 Quick Tutorial Video](https://www.youtube.com/watch?v=WqLKfta5Ijw)
+- [Making Deep Learning go Brrrr](https://www.youtube.com/watch?v=WqLKfta5Ijw)
