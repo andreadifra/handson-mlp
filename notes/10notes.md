@@ -284,9 +284,14 @@ When using `grad` the computation graph is destroyed after the call, freeing up 
 
 ## Autodiff with computation graphs
 
+Excalidraw versions:
+
+- ![Forward computation graph](images/autodiff_forward_graph.excalidraw)
+- ![Reverse-mode sensitivity flow](images/autodiff_reverse_flow.excalidraw)
+
 Autodiff sits between **numerical differentiation** and **symbolic differentiation**.
 
-- **Numerical differentiation** perturbs the input a little and estimates the slope. It is simple, but approximate and often numerically unstable.
+- **Numerical differentiation** perturbs the input a little (i.e., using $\epsilon$) and estimates the slope. It is simple, but approximate and often numerically unstable.
 - **Symbolic differentiation** manipulates an expression like algebra and produces a new expression for the derivative.
 - **Autodiff** breaks a function into small operations, stores them in a **computation graph**, and applies the chain rule exactly, one local step at a time.
 
