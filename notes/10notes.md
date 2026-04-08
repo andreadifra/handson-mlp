@@ -3,12 +3,15 @@
 ## General
 
 - [ ] Revise how backpropagation works in neural networks and make notes
+  - [ ] Watch [Karphaty's Micrograd video](https://www.youtube.com/watch?v=VMj-3S1tku0&t=5971s)
 
 ## PyTorch
 
 - [ ] Automatic differentiation and how it works in PyTorch
-  - [ ] Review appendix A & chapter 9 of the book
+  - [x] Review appendix A
+  - [ ] Go through appendix A notebook
 - [ ] Computational graphs, what are they and how they are built in PyTorch
+  - [ ] Create mini-differentiation engine as exercise
 
 # Pick-up
 - [x] Explore * unpacking 
@@ -18,7 +21,7 @@
 
 # Book Questions
 
-## 2. What is the difference between torch methods ending in "_" and those that don't?
+## 2. What is the difference between methods ending in `_` and those without?
 
 In PyTorch, methods ending in `_` are **in-place operations** — they modify the tensor directly without creating a new one.
 
@@ -270,3 +273,242 @@ _ = train2(optimized_model, optimizer, xentropy, accuracy, train_loader , valid_
 Resources:
 - [PyTorch 2.0 Quick Tutorial Video](https://www.youtube.com/watch?v=WqLKfta5Ijw)
 - [Making Deep Learning go Brrrr](https://www.youtube.com/watch?v=WqLKfta5Ijw)
+
+## Torch Autograd
+
+`requires_grad=True` tells PyTorch to track all operations on that tensor so it can compute gradients later. When you call `.backward()`, PyTorch uses the recorded operations to calculate the gradient of the loss with respect to that tensor.
+
+`from torch import autograd` is a way to import the `autograd` module directly, so you can use its functions directly. Most importantly, `autograd.grad()` allows you to compute gradients of tensors without needing to call `.backward()`, which can be useful for more complex gradient computations or when you want to compute gradients with respect to specific tensors.
+
+When using `grad` the computation graph is destroyed after the call, freeing up memory. Use `retain_graph=True` if you need to call `grad` multiple times on the same graph (you will most likely not need this in practice, but useful for exercises).
+
+## Autodiff with computation graphs
+
+Autodiff sits between **numerical differentiation** and **symbolic differentiation**.
+
+- **Numerical differentiation** perturbs the input a little and estimates the slope. It is simple, but approximate and often numerically unstable.
+- **Symbolic differentiation** manipulates an expression like algebra and produces a new expression for the derivative.
+- **Autodiff** breaks a function into small operations, stores them in a **computation graph**, and applies the chain rule exactly, one local step at a time.
+
+The key idea is that a large derivative looks hard only when you stare at the whole formula at once. A computation graph turns it into many tiny derivatives that are easy:
+
+- addition: local derivative is `1`
+- multiplication: local derivative is “the other input”
+- `sin`: local derivative is `cos`
+- square: local derivative is `2x`
+
+Autodiff just composes these local rules using the chain rule.
+
+### Intuition: what a computation graph is doing
+
+Think of a computation graph as a recipe with saved intermediate results. Each node stores one small operation, and each edge says “this value is used here next.”
+
+Use the same example as in Appendix A:
+
+$$
+f(x,y) = x^2y + y + 2
+$$
+
+At $x = 3$ and $y = 4$ the graph evaluates like this:
+
+```text
+Forward computation graph
+
+x=3 ----┐
+        v
+      [*] a = x * x = 9 ----┐
+x=3 ----┘                   |
+                            v
+y=4 --------------------> [*] b = a * y = 36 ----┐
+                                                  |
+y=4 ----┐                                         v
+        v                                       [+] f = b + c = 42
+      [+] c = y + 2 = 6 -------------------------^
+2   ----┘
+```
+
+The graph gives the model a place to store two kinds of information:
+
+- the **primal values**: `a = 9`, `b = 36`, `c = 6`, `f = 42`
+- the **dependency structure**: which earlier values each node depends on
+
+That dependency structure is what makes autodiff efficient. We do not differentiate the whole formula from scratch for each variable. We reuse the graph.
+
+### Forward-mode autodiff
+
+Forward mode asks:
+
+> If I nudge one input a little, how does that small change flow forward through the graph?
+
+So forward mode propagates a value and its derivative together.
+
+To compute $\dfrac{\partial f}{\partial x}$, seed the input derivatives with:
+
+$$
+\dot{x} = 1, \qquad \dot{y} = 0
+$$
+
+Now move left to right through the same graph:
+
+1. $a = x^2$ so $\dot{a} = 2x\dot{x} = 2 \cdot 3 \cdot 1 = 6$
+2. $b = ay$ so $\dot{b} = y\dot{a} + a\dot{y} = 4 \cdot 6 + 9 \cdot 0 = 24$
+3. $c = y + 2$ so $\dot{c} = \dot{y} = 0$
+4. $f = b + c$ so $\dot{f} = \dot{b} + \dot{c} = 24 + 0 = 24$
+
+Therefore:
+
+$$
+\frac{\partial f}{\partial x} = 24
+$$
+
+To get $\dfrac{\partial f}{\partial y}$, run forward mode again with a different seed:
+
+$$
+\dot{x} = 0, \qquad \dot{y} = 1
+$$
+
+This gives:
+
+$$
+\dot{a} = 0, \qquad \dot{b} = 9, \qquad \dot{c} = 1, \qquad \dot{f} = 10
+$$
+
+So:
+
+$$
+\frac{\partial f}{\partial y} = 10
+$$
+
+The intuitive picture is: forward mode carries a little “sensitivity tag” with each value and keeps updating that tag as the value flows through the graph.
+
+### Forward mode and symbolic differentiation
+
+One clean way to implement forward mode is to make each node return a **new symbolic derivative expression**.
+
+For the same graph, the derivative rules look like this:
+
+- $\dfrac{d(x)}{dx} = 1$
+- $\dfrac{d(y)}{dx} = 0$
+- $\dfrac{d(a+b)}{dx} = \dfrac{da}{dx} + \dfrac{db}{dx}$
+- $\dfrac{d(ab)}{dx} = a\dfrac{db}{dx} + \dfrac{da}{dx}b$
+
+Apply these rules recursively and you do **not** just get a number. You get a new expression for the derivative. For example:
+
+$$
+\frac{\partial f}{\partial x} = \frac{\partial (x^2y + y + 2)}{\partial x} = 2xy
+$$
+
+In a toy autodiff engine, that derivative is often represented as **another computation graph**, not as plain text algebra.
+
+That second graph is necessary because the derivative is itself a function. If you only kept the final numeric answer `24`, you would lose the structure needed to:
+
+- evaluate the derivative at a different point
+- differentiate again to get second derivatives
+- reuse the derivative expression as part of a larger computation
+
+So symbolic forward mode often works like this:
+
+1. build the original computation graph for $f$
+2. walk through it and build a second graph for $\dfrac{\partial f}{\partial x}$
+3. evaluate that derivative graph at the chosen input values
+
+In practice, forward mode is often implemented more efficiently using **dual numbers** or **JVPs** (Jacobian-vector products), which carry the derivative information numerically and avoid explicitly building a huge derivative graph. But conceptually, the symbolic-graph view makes it clear why the derivative must still preserve the same compositional structure as the original function.
+
+### Reverse-mode autodiff (backward mode)
+
+Reverse mode asks the opposite question:
+
+> If the output changes by a tiny amount, how much did each earlier node contribute to that change?
+
+Instead of pushing derivatives forward from one input, reverse mode pulls sensitivities backward from the output.
+
+This is the mode used by backpropagation.
+
+First do a normal forward pass and cache the intermediate values:
+
+$$
+a = 9, \qquad b = 36, \qquad c = 6, \qquad f = 42
+$$
+
+Then start the backward pass with:
+
+$$
+\bar{f} = \frac{\partial f}{\partial f} = 1
+$$
+
+Here the bar means “how sensitive the final output is to this node.”
+
+Now move right to left:
+
+1. From $f = b + c$, set $\bar{b} = 1$ and $\bar{c} = 1$.
+2. From $c = y + 2$, add $\bar{c} \cdot 1 = 1$ to $\bar{y}$.
+3. From $b = ay$, add $\bar{b} \cdot y = 1 \cdot 4 = 4$ to $\bar{a}$, and add $\bar{b} \cdot a = 1 \cdot 9 = 9$ to $\bar{y}$.
+4. From $a = x^2$, add $\bar{a} \cdot 2x = 4 \cdot 6 = 24$ to $\bar{x}$.
+
+So the final gradients are:
+
+$$
+\frac{\partial f}{\partial x} = 24, \qquad \frac{\partial f}{\partial y} = 10
+$$
+
+Here is the same backward flow as a diagram:
+
+```text
+Backward flow of sensitivities
+
+f_bar = 1
+  |
+  +--> b_bar = 1 -------------------> a_bar = 1 * y = 4 ----> x_bar = 4 * 2x = 24
+  |                                  
+  |                                   ---> y contribution = 1 * a = 9
+  |
+  +--> c_bar = 1 -------------------------------------------> y contribution = 1
+
+Final: y_bar = 9 + 1 = 10
+```
+
+The intuitive picture is: reverse mode asks each node, “how much does the final output depend on you?”, and then hands that responsibility backward to the node’s parents.
+
+### Why reverse mode is used for neural networks
+
+In deep learning, the inputs to the loss are usually all the model parameters:
+
+- thousands or millions of weights and biases
+- one scalar output during training: the loss
+
+That is exactly the setting where reverse mode is strongest. One forward pass plus one backward pass gives the gradient of the loss with respect to **all** parameters.
+
+That is why backpropagation is best understood as:
+
+- **forward pass**: compute activations and save what the backward pass will need
+- **backward pass**: use reverse-mode autodiff to compute all gradients efficiently
+
+### Pros and cons
+
+**Forward mode**
+
+- Best when there are **few inputs** and **many outputs**.
+- Natural for computing **JVPs**.
+- Conceptually simple: propagate local sensitivities forward with the values.
+- Symbolic versions can produce exact derivative expressions and make higher-order derivatives easy to understand.
+- To get the full gradient with respect to many inputs, you usually need one pass per input direction.
+- Symbolic versions can create large derivative graphs or expression blow-up.
+
+**Reverse mode**
+
+- Best when there are **many inputs** and **few outputs**, especially one scalar loss.
+- Natural for computing **VJPs** and full parameter gradients.
+- One backward pass can produce gradients for all inputs at once.
+- Requires a forward pass first, because the backward pass needs the saved intermediate values.
+- Can use a lot of memory, since activations often need to be cached for backpropagation.
+- Less convenient than forward mode when you want the full Jacobian of many outputs.
+
+### Short mental model
+
+- **Forward mode**: “push a tiny input change through the graph.”
+- **Reverse mode**: “pull output responsibility back through the graph.”
+- **Symbolic differentiation**: “build the derivative as another expression or graph.”
+- **Backpropagation**: “reverse-mode autodiff used to train neural networks.”
+
+If I had to remember just one thing: forward mode is usually better when you care about how one input direction affects many outputs, while reverse mode is usually better when one scalar loss depends on many parameters.
+
