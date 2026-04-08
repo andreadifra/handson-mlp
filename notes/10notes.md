@@ -284,10 +284,10 @@ When using `grad` the computation graph is destroyed after the call, freeing up 
 
 ## Autodiff with computation graphs
 
-Excalidraw versions:
+Excalidraw sources:
 
-- ![Forward computation graph](images/autodiff_forward_graph.excalidraw)
-- ![Reverse-mode sensitivity flow](images/autodiff_reverse_flow.excalidraw)
+- [Forward computation graph](images/autodiff_forward_graph.excalidraw)
+- [Reverse-mode sensitivity flow](images/autodiff_reverse_flow.excalidraw)
 
 Autodiff sits between **numerical differentiation** and **symbolic differentiation**.
 
@@ -316,21 +316,7 @@ $$
 
 At $x = 3$ and $y = 4$ the graph evaluates like this:
 
-```text
-Forward computation graph
-
-x=3 ----┐
-        v
-      [*] a = x * x = 9 ----┐
-x=3 ----┘                   |
-                            v
-y=4 --------------------> [*] b = a * y = 36 ----┐
-                                                  |
-y=4 ----┐                                         v
-        v                                       [+] f = b + c = 42
-      [+] c = y + 2 = 6 -------------------------^
-2   ----┘
-```
+![Forward computation graph](images/autodiff_forward_graph.excalidraw.svg)
 
 The graph gives the model a place to store two kinds of information:
 
@@ -458,19 +444,7 @@ $$
 
 Here is the same backward flow as a diagram:
 
-```text
-Backward flow of sensitivities
-
-f_bar = 1
-  |
-  +--> b_bar = 1 -------------------> a_bar = 1 * y = 4 ----> x_bar = 4 * 2x = 24
-  |                                  
-  |                                   ---> y contribution = 1 * a = 9
-  |
-  +--> c_bar = 1 -------------------------------------------> y contribution = 1
-
-Final: y_bar = 9 + 1 = 10
-```
+![Reverse-mode sensitivity flow](images/autodiff_reverse_flow.excalidraw.svg)
 
 The intuitive picture is: reverse mode asks each node, “how much does the final output depend on you?”, and then hands that responsibility backward to the node’s parents.
 

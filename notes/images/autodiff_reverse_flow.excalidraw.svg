@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="540" viewBox="0 0 1120 540" role="img" aria-labelledby="title desc">
+  <title id="title">Reverse-mode autodiff sensitivity flow</title>
+  <desc id="desc">Backward sensitivity flow for reverse-mode autodiff on the function f(x, y) = x squared y plus y plus 2, showing how gradients propagate from f_bar to x_bar and y_bar.</desc>
+  <defs>
+    <marker id="arrow-reverse" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#495057" />
+    </marker>
+    <filter id="shadow-reverse" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#adb5bd" flood-opacity="0.35" />
+    </filter>
+    <style>
+      .title { font: 700 28px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #212529; }
+      .box-title { font: 700 21px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #212529; }
+      .box-subtitle { font: 500 17px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #343a40; }
+      .edge-label { font: 600 15px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #495057; }
+      .note { font: 500 16px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #495057; }
+      .edge { stroke: #495057; stroke-width: 3; fill: none; marker-end: url(#arrow-reverse); }
+      .callout { font: 600 15px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #5f3dc4; }
+    </style>
+  </defs>
+
+  <rect width="1120" height="540" fill="#fcfcfb" />
+  <text x="50" y="54" class="title">Reverse mode: pull sensitivities back from the scalar output</text>
+
+  <rect x="920" y="220" rx="18" ry="18" width="140" height="82" fill="#ffd43b" stroke="#f08c00" stroke-width="3" filter="url(#shadow-reverse)" />
+  <text x="990" y="260" text-anchor="middle" class="box-title">f_bar = 1</text>
+  <text x="990" y="286" text-anchor="middle" class="box-subtitle">seed the output</text>
+
+  <rect x="690" y="120" rx="18" ry="18" width="170" height="82" fill="#e5dbff" stroke="#7048e8" stroke-width="3" filter="url(#shadow-reverse)" />
+  <text x="775" y="160" text-anchor="middle" class="box-title">b_bar = 1</text>
+  <text x="775" y="186" text-anchor="middle" class="box-subtitle">from f = b + c</text>
+
+  <rect x="690" y="330" rx="18" ry="18" width="170" height="82" fill="#e5dbff" stroke="#7048e8" stroke-width="3" filter="url(#shadow-reverse)" />
+  <text x="775" y="370" text-anchor="middle" class="box-title">c_bar = 1</text>
+  <text x="775" y="396" text-anchor="middle" class="box-subtitle">same split from f</text>
+
+  <rect x="430" y="120" rx="18" ry="18" width="170" height="82" fill="#e5dbff" stroke="#7048e8" stroke-width="3" filter="url(#shadow-reverse)" />
+  <text x="515" y="160" text-anchor="middle" class="box-title">a_bar = 4</text>
+  <text x="515" y="186" text-anchor="middle" class="box-subtitle">b_bar × y</text>
+
+  <rect x="150" y="120" rx="18" ry="18" width="180" height="82" fill="#e5dbff" stroke="#7048e8" stroke-width="3" filter="url(#shadow-reverse)" />
+  <text x="240" y="160" text-anchor="middle" class="box-title">x_bar = 24</text>
+  <text x="240" y="186" text-anchor="middle" class="box-subtitle">a_bar × 2x</text>
+
+  <rect x="160" y="300" rx="18" ry="18" width="230" height="92" fill="#e5dbff" stroke="#7048e8" stroke-width="3" filter="url(#shadow-reverse)" />
+  <text x="275" y="342" text-anchor="middle" class="box-title">y_bar = 9 + 1 = 10</text>
+  <text x="275" y="372" text-anchor="middle" class="box-subtitle">sum contributions from b and c</text>
+
+  <path class="edge" d="M 920 245 C 900 245, 894 161, 860 161" />
+  <path class="edge" d="M 920 277 C 900 277, 894 371, 860 371" />
+  <text x="876" y="232" class="edge-label">split +</text>
+  <text x="875" y="320" class="edge-label">split +</text>
+
+  <path class="edge" d="M 690 161 C 650 161, 642 161, 600 161" />
+  <text x="620" y="146" class="edge-label">× y = 4</text>
+
+  <path class="edge" d="M 430 161 C 380 161, 370 161, 330 161" />
+  <text x="350" y="146" class="edge-label">× 2x = 6</text>
+
+  <path class="edge" d="M 690 171 C 560 171, 520 316, 390 316" />
+  <text x="514" y="250" class="edge-label">+ a = 9</text>
+
+  <path class="edge" d="M 690 371 C 540 371, 520 352, 390 352" />
+  <text x="514" y="391" class="edge-label">+ 1</text>
+
+  <text x="430" y="258" class="callout">b = a · y sends one gradient branch to a and one to y</text>
+  <text x="60" y="470" class="note">Reverse mode accumulates responsibility from the scalar loss back to every earlier node. That is why one backward pass can recover all parameter gradients in a neural network.</text>
+</svg>

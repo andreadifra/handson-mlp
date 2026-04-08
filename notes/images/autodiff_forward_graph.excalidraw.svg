@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="520" viewBox="0 0 1100 520" role="img" aria-labelledby="title desc">
+  <title id="title">Autodiff forward pass computation graph</title>
+  <desc id="desc">Forward computation graph for f(x, y) = x^2 y + y + 2 evaluated at x equals 3 and y equals 4.</desc>
+  <defs>
+    <marker id="arrow-forward" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#495057" />
+    </marker>
+    <filter id="shadow-forward" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#adb5bd" flood-opacity="0.35" />
+    </filter>
+    <style>
+      .title { font: 700 28px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #212529; }
+      .box-title { font: 700 22px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #212529; }
+      .box-subtitle { font: 500 18px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #343a40; }
+      .edge-label { font: 600 15px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #495057; }
+      .note { font: 500 16px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #495057; }
+      .edge { stroke: #495057; stroke-width: 3; fill: none; marker-end: url(#arrow-forward); }
+    </style>
+  </defs>
+
+  <rect width="1100" height="520" fill="#fcfcfb" />
+  <text x="50" y="54" class="title">Autodiff forward pass: computation graph for f(x, y) = x^2 y + y + 2</text>
+
+  <rect x="70" y="135" rx="18" ry="18" width="150" height="74" fill="#d0ebff" stroke="#1c7ed6" stroke-width="3" filter="url(#shadow-forward)" />
+  <text x="145" y="175" text-anchor="middle" class="box-title">x = 3</text>
+
+  <rect x="70" y="300" rx="18" ry="18" width="150" height="74" fill="#d0ebff" stroke="#1c7ed6" stroke-width="3" filter="url(#shadow-forward)" />
+  <text x="145" y="340" text-anchor="middle" class="box-title">y = 4</text>
+
+  <rect x="310" y="108" rx="18" ry="18" width="220" height="92" fill="#fff3bf" stroke="#f08c00" stroke-width="3" filter="url(#shadow-forward)" />
+  <text x="420" y="150" text-anchor="middle" class="box-title">a = x^2 = 9</text>
+  <text x="420" y="178" text-anchor="middle" class="box-subtitle">square x once and cache it</text>
+
+  <rect x="310" y="260" rx="18" ry="18" width="220" height="92" fill="#fff3bf" stroke="#f08c00" stroke-width="3" filter="url(#shadow-forward)" />
+  <text x="420" y="302" text-anchor="middle" class="box-title">c = y + 2 = 6</text>
+  <text x="420" y="330" text-anchor="middle" class="box-subtitle">add a constant branch</text>
+
+  <rect x="610" y="180" rx="18" ry="18" width="230" height="98" fill="#fff3bf" stroke="#f08c00" stroke-width="3" filter="url(#shadow-forward)" />
+  <text x="725" y="224" text-anchor="middle" class="box-title">b = a · y = 36</text>
+  <text x="725" y="254" text-anchor="middle" class="box-subtitle">combine the cached square with y</text>
+
+  <rect x="900" y="208" rx="18" ry="18" width="150" height="86" fill="#d3f9d8" stroke="#2b8a3e" stroke-width="3" filter="url(#shadow-forward)" />
+  <text x="975" y="248" text-anchor="middle" class="box-title">f = 42</text>
+  <text x="975" y="276" text-anchor="middle" class="box-subtitle">b + c</text>
+
+  <path class="edge" d="M 220 172 C 255 172, 265 154, 310 154" />
+  <path class="edge" d="M 220 172 C 255 172, 265 172, 310 172" />
+  <text x="260" y="147" class="edge-label">x</text>
+  <text x="260" y="191" class="edge-label">x</text>
+
+  <path class="edge" d="M 220 337 C 270 337, 270 306, 310 306" />
+  <path class="edge" d="M 220 337 C 390 337, 495 235, 610 235" />
+  <text x="260" y="296" class="edge-label">y</text>
+  <text x="500" y="252" class="edge-label">y</text>
+
+  <path class="edge" d="M 530 154 C 565 154, 570 208, 610 208" />
+  <text x="560" y="172" class="edge-label">a</text>
+
+  <path class="edge" d="M 840 229 C 870 229, 872 248, 900 248" />
+  <path class="edge" d="M 530 306 C 690 306, 775 288, 900 288" />
+  <text x="868" y="219" class="edge-label">b</text>
+  <text x="770" y="324" class="edge-label">c</text>
+
+  <text x="70" y="446" class="note">Forward mode stores both the intermediate values and the wiring: once the graph is built, later derivative passes can reuse it instead of re-deriving the full expression.</text>
+</svg>
