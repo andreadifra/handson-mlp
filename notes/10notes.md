@@ -22,6 +22,12 @@
 
 # Book Questions
 
+## 1. Most important features of PyTorch versus Numpy?
+
+1. Allows for hardware accelleration using GPUs and TPUs, i.e making operations parallel and speeding up computations
+2. Autodiff engine
+3. All types of NN layers and training utilities, such as optimizers, loss functions, and data loading tools.
+
 ## 2. What is the difference between methods ending in `_` and those without?
 
 In PyTorch, methods ending in `_` are **in-place operations** — they modify the tensor directly without creating a new one.
@@ -46,6 +52,72 @@ A few important caveats about in-place ops:
 
 **Documentation:** The convention is explained in the PyTorch docs here:
 👉 https://pytorch.org/docs/stable/notes/autograd.html#in-place-operations-with-autograd
+
+## 3. What are two ways to create a new tensor on the GPU?
+
+1. Create the tensor directly on the GPU:
+```python
+x = torch.tensor([1.0, 2.0, 3.0], device="cuda")
+```
+
+2. Create tensor (CPU default), then move onto GPU:
+```python
+x = torch.tensor([1.0, 2.0, 3.0])  # CPU tensor
+x.to("cuda")  # Move to GPU
+```
+## 4. Three ways of computing tensor computations without using autograd
+
+1. Set `requires_grad=False` when creating the tensor:
+```python
+x = torch.tensor([1.0, 2.0, 3.0], requires_grad=False)  # No gradients will be tracked for this tensor
+```
+
+2. Use `torch.no_grad()` context manager:
+```python
+with torch.no_grad():
+  # assuming y and x are tensors
+    y = x * 2  # No gradients will be tracked for this operation
+```
+
+3. Use `torch.Tensor.detach()` to create a new tensor that shares the same data but is not tracked for gradients:
+```python
+x = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)  # This tensor tracks gradients
+y = x.detach()  # y shares the same data but does not track gradients
+```
+
+Note that since x and y point to the same data (i.e share the same memory), modifying y will also modify x, but y itself won't have `requires_grad=True` and won't be part of the autograd graph.
+
+## 5. Runtime error checks:
+
+1. This code will not cause a runtime error because `torch.exp_()` is applied at the end of the chain and its outputs are not modified by any in-place operation.
+
+
+```python
+t = torch.tensor(2.0, requires_grad=True)
+z = t.cos().exp_()
+z.backward()
+```
+
+2. This code will cause a runtime error because `torch.cos_()` is an in-place operation that modifies the tensor `t` before `torch.exp()` is applied. Since `t` is needed for the backward pass to compute gradients, modifying it in-place will interfere with autograd's ability to track the operations correctly, leading to an error when `z.backward()` is called.
+
+```python
+t = torch.tensor(2.0, requires_grad=True)
+z = t.cos_().exp()
+z.backward()
+```
+
+3.  
+
+## 6. Suppose you create a Linear( 100, 200) module. How many neurons does it have? What is the shape of is weight and bias parameters? What input shape does it expect? What output shape does it produce?
+
+200 neurons, weight shape (200, 100), bias shape (200,) - one for each neuron.
+It can take however many inputs as you want, as long as the last dimension is 100. 
+
+The output will have the same shape as the input, except the last dimension will be 200.
+
+## 8. Why is it recommended to create the optimizer after the model is moved to the GPU?
+
+When you pass the model.params() to the optimizer, it captures references to those parameters. If you create the optimizer before moving the model to the GPU, it will hold references to the CPU versions of the parameters. 
 
 ## 12. What is the difference between `torch.jit.trace` and `torch.jit.script`?
 
