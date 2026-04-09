@@ -20,7 +20,8 @@
   ],
   "mounts": [
 		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude/skills,target=/root/.claude/skills,type=bind,readonly",
-		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.agents/skills,type=bind,readonly"
+		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.agents/skills,type=bind,readonly",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.copilot/mcp-config.json,target=/root/.copilot/mcp-config.json,type=bind,readonly"
 	],
   "containerUser": "root",
   "remoteUser": "root",
@@ -28,7 +29,8 @@
     "PATH": "/root/.local/bin:/opt/venvs/handson-mlp/bin:${containerEnv:PATH}"
   },
   "features": {
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/copilot-cli:1": {}
   },
   "postCreateCommand": "sh .devcontainer/scripts/post-create.sh",
   "customizations": {
