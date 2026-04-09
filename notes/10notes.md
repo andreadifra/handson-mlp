@@ -17,6 +17,7 @@
 - [x] Explore * unpacking 
 - [x] Try debugger with PyTorch code
 - [ ] For question on hyperparameter tuning, try Optuna on a small model and dataset and add database so that you can visualize the search history in the Optuna dashboard.
+  - [ ] Try Marimo notebook for the exercise.
 - [ ] Go through [Making Deep Learning go Brrrr](https://www.youtube.com/watch?v=WqLKfta5Ijw) and make notes
 
 # Book Questions
@@ -284,11 +285,6 @@ When using `grad` the computation graph is destroyed after the call, freeing up 
 
 ## Autodiff with computation graphs
 
-Excalidraw sources:
-
-- [Forward computation graph](images/autodiff_forward_graph.excalidraw)
-- [Reverse-mode sensitivity flow](images/autodiff_reverse_flow.excalidraw)
-
 Autodiff sits between **numerical differentiation** and **symbolic differentiation**.
 
 - **Numerical differentiation** perturbs the input a little (i.e., using $\epsilon$) and estimates the slope. It is simple, but approximate and often numerically unstable.
@@ -462,25 +458,16 @@ That is why backpropagation is best understood as:
 - **forward pass**: compute activations and save what the backward pass will need
 - **backward pass**: use reverse-mode autodiff to compute all gradients efficiently
 
-### Pros and cons
+### Summary
 
-**Forward mode**
+| Forward mode | Reverse mode |
+|---|---|
+| Few inputs, many outputs | Many inputs, few outputs |
+| Propagate sensitivities forward | Pull sensitivities backward |
+| Conceptually simple: one pass per input | Requires forward pass first to calculate values|
+| To get the full gradients with respect to many inputs, you usually need one pass per input direction. | Can use a lot of memory, since activations often need to be cached for backpropagation. |
+| Symbolic versions can create large derivative graphs or expression blow-up. | Less convenient than forward mode when you want the full Jacobian of many outputs. |
 
-- Best when there are **few inputs** and **many outputs**.
-- Natural for computing **JVPs**.
-- Conceptually simple: propagate local sensitivities forward with the values.
-- Symbolic versions can produce exact derivative expressions and make higher-order derivatives easy to understand.
-- To get the full gradient with respect to many inputs, you usually need one pass per input direction.
-- Symbolic versions can create large derivative graphs or expression blow-up.
-
-**Reverse mode**
-
-- Best when there are **many inputs** and **few outputs**, especially one scalar loss.
-- Natural for computing **VJPs** and full parameter gradients.
-- One backward pass can produce gradients for all inputs at once.
-- Requires a forward pass first, because the backward pass needs the saved intermediate values.
-- Can use a lot of memory, since activations often need to be cached for backpropagation.
-- Less convenient than forward mode when you want the full Jacobian of many outputs.
 
 ### Short mental model
 
@@ -488,6 +475,4 @@ That is why backpropagation is best understood as:
 - **Reverse mode**: “pull output responsibility back through the graph.”
 - **Symbolic differentiation**: “build the derivative as another expression or graph.”
 - **Backpropagation**: “reverse-mode autodiff used to train neural networks.”
-
-If I had to remember just one thing: forward mode is usually better when you care about how one input direction affects many outputs, while reverse mode is usually better when one scalar loss depends on many parameters.
 
