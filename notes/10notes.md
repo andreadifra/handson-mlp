@@ -10,7 +10,7 @@
 - [ ] Automatic differentiation and how it works in PyTorch
   - [x] Review appendix A
   - [ ] Go through appendix A notebook
-- [ ] Computational graphs, what are they and how they are built in PyTorch
+- [x] Computational graphs, what are they and how they are built in PyTorch
   - [ ] Create mini-differentiation engine as exercise
 
 # Pick-up
@@ -19,6 +19,8 @@
 - [ ] For question on hyperparameter tuning, try Optuna on a small model and dataset and add database so that you can visualize the search history in the Optuna dashboard.
   - [ ] Try Marimo notebook for the exercise.
 - [ ] Go through [Making Deep Learning go Brrrr](https://www.youtube.com/watch?v=WqLKfta5Ijw) and make notes
+- [ ] Notes on Entropy + different classification losses
+
 
 # Book Questions
 
@@ -89,24 +91,43 @@ Note that since x and y point to the same data (i.e share the same memory), modi
 
 ## 5. Runtime error checks:
 
-1. This code will not cause a runtime error because `torch.exp_()` is applied at the end of the chain and its outputs are not modified by any in-place operation.
-
-
+1. 
 ```python
 t = torch.tensor(2.0, requires_grad=True)
 z = t.cos().exp_()
 z.backward()
 ```
 
-2. This code will cause a runtime error because `torch.cos_()` is an in-place operation that modifies the tensor `t` before `torch.exp()` is applied. Since `t` is needed for the backward pass to compute gradients, modifying it in-place will interfere with autograd's ability to track the operations correctly, leading to an error when `z.backward()` is called.
+This code will not cause a runtime error because `torch.exp_()` is applied at the end of the chain and its outputs are not modified by any in-place operation.
 
+2. 
 ```python
 t = torch.tensor(2.0, requires_grad=True)
 z = t.cos_().exp()
 z.backward()
 ```
+This code will cause a runtime error because `torch.cos_()` is an in-place operation that modifies the tensor `t` before `torch.exp()` is applied. Since `t` is needed for the backward pass to compute gradients, modifying it in-place will interfere with autograd's ability to track the operations correctly, leading to an error when `z.backward()` is called.
 
-3.  
+3.
+```python
+t = torch.tensor(2.0, requires_grad=True)
+z = t.exp().cos_()
+z.backward()
+```
+
+This code will also cause a runtime error since cos_() modifies the output of `t.exp()` in-place, so the input of the `cos` operation is modified in-place but this is needed for the backward pass.
+
+4.
+```python
+u = torch.tensor(2.0, requires_grad=True)
+v = u + 1
+w = v.cos() * v.sin_()
+w.backward()
+```
+In this case, there will be a Runtime error because `torch.sin_()` modifies `v` after it has been used in the `torch.cos()` operation, so in the backward pass, when the engine goes to check `v` for the `torch.cos()` operation, it will find that `v` has been modified in-place by `torch.sin_()`, which will cause an error.
+
+On the other hand, if we had written `w = v.cos_() * v.sin()`, then there would be no error, because `torch.cos_()` would modify `v` before it is used in the `torch.sin()` operation, so `torch.sin()` would see the modified `v` and there would be no conflict in the backward pass.
+
 
 ## 6. Suppose you create a Linear( 100, 200) module. How many neurons does it have? What is the shape of is weight and bias parameters? What input shape does it expect? What output shape does it produce?
 
@@ -115,9 +136,60 @@ It can take however many inputs as you want, as long as the last dimension is 10
 
 The output will have the same shape as the input, except the last dimension will be 200.
 
+## 7. What are the main steps of a training loop?
+
+A PyTorch training loop has two nested loops: an **outer epoch loop** that repeats the full pass over the dataset, and an **inner batch loop** that iterates over mini-batches from the `DataLoader`. Inside the batch loop, five steps run in sequence:
+
+Diagram: ![training loop](images/training_loop.excalidraw.svg)
+
+1. **Forward pass** — push the batch through the model to get predictions.
+2. **Compute loss** — compare predictions to the true labels using a loss function. The result is a single scalar that measures how wrong the model is.
+3. **Backward pass** — call `loss.backward()`. PyTorch's autograd walks the computation graph in reverse and fills in `.grad` for every parameter that has `requires_grad=True`.
+4. **Update parameters** — call `optimizer.step()`. The optimizer reads the gradients and adjusts the weights (e.g. `w ← w − lr × w.grad` for plain SGD).
+5. **Zero gradients** — call `optimizer.zero_grad()` to clear the `.grad` attribute on every parameter. Without this, gradients from the previous batch would accumulate.
+
+Putting it together:
+
+```python
+model.train()
+for epoch in range(n_epochs):
+    for X_batch, y_batch in train_loader:
+        predictions = model(X_batch)            # 1. forward pass
+        loss = loss_fn(predictions, y_batch)    # 2. compute loss
+        loss.backward()                         # 3. backward pass
+        optimizer.step()                        # 4. update parameters
+        optimizer.zero_grad()                   # 5. zero gradients
+```
+
+Key details:
+
+- `model.train()` is called once before the loop. It enables training-specific behaviour in layers like `Dropout` and `BatchNorm`.
+- The order of steps 3–5 matters: gradients must be zeroed before `backward()`, and `step()` must come after `backward()` so the optimizer sees fresh gradients.
+- In practice, a validation loop usually runs at the end of each epoch. It calls `model.eval()` and wraps inference in `torch.no_grad()` to skip gradient tracking.
+
+
 ## 8. Why is it recommended to create the optimizer after the model is moved to the GPU?
 
 When you pass the model.params() to the optimizer, it captures references to those parameters. If you create the optimizer before moving the model to the GPU, it will hold references to the CPU versions of the parameters. 
+
+## 9. What DataLoader options should you generally set to speed up training when using a GPU?
+
+- `batch_size`: Larger batch sizes can better utilize the GPU, but be mindful of memory constraints. (32 and 64 are common starting points).
+- `num_workers`: Setting this to a positive integer (e.g., 4 or 8) allows the DataLoader to load data in parallel using multiple CPU cores, which can speed up data loading.
+- `prefetch_factor`: Setting this to a positive integer (e.g., 2) allows the DataLoader to prefetch batches in the background while the GPU is training on the current batch, which can help keep the GPU fed with data.
+- `persistent_workers=True`: This keeps the worker processes alive across epochs, which can reduce startup overhead and speed up data loading in subsequent epochs.
+- `pin_memory=True`: This tells PyTorch to allocate the data in page-locked memory, which can speed up transfers to the GPU.
+
+## 10. What are the main classification losses in PyTorch and when should you use each?
+
+- `nn.CrossEntropyLoss`: Use this for multi-class classification problems where each input belongs to exactly one class. It combines `nn.LogSoftmax()` and `nn.NLLLoss()` in one single class. The target must be a class index (0, 1, ..., C-1) for C classes or a probability distribution over classes (if `label_smoothing` is used).
+  - Another option is to apply a nn.LogSoftmax() layer to the model outputs and then use `nn.NLLLoss()` as this will give you log probabilities as output, instead of logits. This can be useful if you want to apply some custom logic to the probabilities before computing the loss. However, in most other circumnstances it is better to use `nn.CrossEntropyLoss` as this will be faster and fuses together `nn.LogSoftmax` and `nn.NLLLoss()` into one step, which can be more numerically stable and efficient. 
+- `nn.BCEWithLogitsLoss`: Use this for binary classification problems or multi-label binary classification problems where each input can belong to multiple classes independently. It combines a sigmoid layer and the binary cross-entropy loss in one single class, and you will need one neuron per label in the output layer.
+  - Similarly to above, you can also use a `nn.Sigmoid` activation function to the output layer to get estimated probabilities directly, and then use the `nn.BCELoss` instead, but this suffers the same drawbacks as discussed above.
+
+## 11. Why is it important to call model.train() before training and model.eval() before validation?
+
+In general, there might be specific settings or behaviours that are different between training and evaluation modes. For example, some layers like `Dropout` and `BatchNorm` behave differently during training and evaluation.
 
 ## 12. What is the difference between `torch.jit.trace` and `torch.jit.script`?
 
@@ -548,3 +620,10 @@ That is why backpropagation is best understood as:
 - **Symbolic differentiation**: “build the derivative as another expression or graph.”
 - **Backpropagation**: “reverse-mode autodiff used to train neural networks.”
 
+## Entropy
+
+Resources:
+ - [A-G Entropy video](https://www.youtube.com/watch?v=ErfnhcEV1O8)
+ - [Artem Kinsarov: Cross Entropy from First Principles](https://www.youtube.com/watch?v=KHVR587oW8I&t=996s)
+ - [Rashka Entropy video](https://www.youtube.com/watch?v=4n71-tZ94yk&pp=ygUSY3Jvc3MgZW50cm9weSBsb3Nz)
+ - [PyTorch code notation](https://github.com/pytorch/pytorch/blob/v2.11.0/torch/nn/modules/loss.py#L1194)
