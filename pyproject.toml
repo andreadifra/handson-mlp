@@ -70,17 +70,17 @@ cpu = [
     "ultralytics>=8.3.206,<9.0.0",
 ]
 cu126 = [
-    "accelerate>=1.10.1,<2.0.0",
-    "lion-pytorch>=0.2.3,<0.3.0",
-    "peft>=0.17.1,<0.18.0",
-    "sentence-transformers>=5.1.1,<6.0.0",
-    "stable-baselines3>=2.7.0,<3.0.0",
-    "torch>=2.8.0,<3.0.0",
-    "torchaudio>=2.8.0,<3.0.0",
-    "torchmetrics>=1.8.2,<2.0.0",
-    "torchvision>=0.23.0,<0.24.0",
-    "trl>=0.23.1,<0.24.0",
-    "ultralytics>=8.3.206,<9.0.0",
+    "accelerate>=1.10.1,<2.0.0; sys_platform != 'darwin'",
+    "lion-pytorch>=0.2.3,<0.3.0; sys_platform != 'darwin'",
+    "peft>=0.17.1,<0.18.0; sys_platform != 'darwin'",
+    "sentence-transformers>=5.1.1,<6.0.0; sys_platform != 'darwin'",
+    "stable-baselines3>=2.7.0,<3.0.0; sys_platform != 'darwin'",
+    "torch>=2.8.0,<3.0.0; sys_platform != 'darwin'",
+    "torchaudio>=2.8.0,<3.0.0; sys_platform != 'darwin'",
+    "torchmetrics>=1.8.2,<2.0.0; sys_platform != 'darwin'",
+    "torchvision>=0.23.0,<0.24.0; sys_platform != 'darwin'",
+    "trl>=0.23.1,<0.24.0; sys_platform != 'darwin'",
+    "ultralytics>=8.3.206,<9.0.0; sys_platform != 'darwin'",
 ]
 dev = [
     "black[jupyter]>=25.11.0,<26.0.0",
@@ -94,6 +94,11 @@ conflicts = [
         { extra = "cpu" },
         { extra = "cu126" },
     ],
+]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
 ]
 
 [tool.uv.sources]

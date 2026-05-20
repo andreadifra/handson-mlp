@@ -97,6 +97,7 @@ Both configurations:
 - build directly from this repository's `docker/Dockerfile`
 - build against `linux/amd64`, which is the correct target for standard Windows and WSL 2 Nvidia setups
 - pin Python 3.12 and install `git` so VS Code source control and notebook kernels work in the container
+- use a container-local project environment at `/opt/venvs/handson-mlp` so the Windows `.venv` on the host is never reused in Linux
 - register a `Python (handson-mlp)` kernel for notebooks
 - install a small set of useful VS Code extensions in the container, including Python, Jupyter, GitHub Copilot, and GitHub Copilot Chat
 - keep the image's default Jupyter Lab command disabled, since VS Code connects directly to the container and runs notebooks itself

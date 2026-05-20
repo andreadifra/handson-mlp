@@ -3,3 +3,4 @@
 !uv.lock
 !apt.txt
 !docker/**
+.venv

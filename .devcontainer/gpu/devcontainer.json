@@ -27,6 +27,7 @@
   "containerUser": "root",
   "remoteUser": "root",
   "remoteEnv": {
+    "UV_PROJECT_ENVIRONMENT": "/opt/venvs/handson-mlp",
     "PATH": "/root/.local/bin:/opt/venvs/handson-mlp/bin:${containerEnv:PATH}"
   },
   "features": {
