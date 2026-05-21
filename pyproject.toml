@@ -53,6 +53,8 @@ dependencies = [
     "soundfile>=0.13.1",
     "ipykernel==6.31.0",
     "marimo>=0.23.0",
+    "mcp>=1.27.1",
+    "watchdog>=6.0.0",
 ]
 
 [project.optional-dependencies]
@@ -124,6 +126,13 @@ explicit = true
 name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
 explicit = true
+
+[dependency-groups]
+dev = [
+    "mcp>=1",
+    "openai>=2.37.0",
+    "pydantic>=2",
+]
 
 [project.urls]
 Repository = "https://github.com/ageron/handson-mlp"
