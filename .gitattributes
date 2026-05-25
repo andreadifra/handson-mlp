@@ -9,6 +9,7 @@
 *.yaml  eol=lf
 *.json  eol=lf
 *.ipynb eol=lf
+*.sh text eol=lf
 
 # Images / binaries
 *.png   binary

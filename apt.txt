@@ -6,3 +6,4 @@ git
 procps
 swig
 sudo
+jq

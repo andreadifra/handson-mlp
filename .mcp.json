@@ -1,0 +1,15 @@
+{
+  "servers": {
+    "DatalayerJupyter": {
+      "command": "uvx",
+      "args": [
+        "jupyter-mcp-server@latest"
+      ],
+      "env": {
+        "JUPYTER_URL": "http://localhost:8888",
+        "JUPYTER_TOKEN": "handson-mlp-local-test",
+        "ALLOW_IMG_OUTPUT": "true"
+      }
+    }
+  }
+}
