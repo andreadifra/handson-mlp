@@ -201,6 +201,28 @@ In general, there might be specific settings or behaviours that are different be
 
 # Notes 
 
+## PyTorch Modules
+
+A `torch.nn.Module` is a Python class that represents a neural network layer or a collection of layers. It is the base class for all neural network modules in PyTorch. A `Module` can contain parameters (weights and biases) and other submodules (other `Module` instances). 
+
+When you create a custom module, you typically define an `__init__` method to set up the layers and a `forward` method to specify how the input data flows through the layers to produce the output. For example:
+
+```python
+import torch
+import torch.nn as nn
+
+class MyModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer1 = nn.Linear(10, 20)
+        self.layer2 = nn.Linear(20, 5)
+
+    def forward(self, x):
+        x = torch.relu(self.layer1(x))
+        x = self.layer2(x)
+        return x
+```
+
 ## Why do we move the optimizer to the GPU?
 
 We keep the optimizer state on the GPU so it can update the model without crossing devices on every training step. Optimizers such as SGD with momentum and Adam store extra tensors, such as momentum buffers or first and second moment estimates. If the model parameters and gradients are on the GPU but the optimizer state is on the CPU, `optimizer.step()` either becomes slow because of repeated CPU-GPU transfers or fails with a device mismatch.
@@ -627,3 +649,587 @@ Resources:
  - [Artem Kinsarov: Cross Entropy from First Principles](https://www.youtube.com/watch?v=KHVR587oW8I&t=996s)
  - [Rashka Entropy video](https://www.youtube.com/watch?v=4n71-tZ94yk&pp=ygUSY3Jvc3MgZW50cm9weSBsb3Nz)
  - [PyTorch code notation](https://github.com/pytorch/pytorch/blob/v2.11.0/torch/nn/modules/loss.py#L1194)
+
+### Information content, entropy, and cross-entropy
+
+Entropy starts with the idea of **surprise**. Rare events are more surprising than common ones, so the information content of an outcome $x$ is defined as:
+
+$$
+I(x) = -\log p(x)
+$$
+
+If we average that surprise over all possible outcomes, we get the entropy of a distribution $P$:
+
+$$
+H(P) = \mathbb{E}_{x \sim P}[I(x)] = -\sum_x P(x) \log P(x)
+$$
+
+Cross-entropy compares two distributions:
+
+$$
+H(P, Q) = -\sum_x P(x) \log Q(x)
+$$
+
+In machine learning:
+
+- $P$ is the target distribution from the data.
+- $Q$ is the model's predicted distribution.
+
+For classification, the loss for one example is just the cross-entropy between the target label distribution and the model output distribution.
+
+### Binary cross-entropy
+
+For binary classification, let one training example be $(x, y)$ with:
+
+- $x \in \mathbb{R}^d$
+- $y \in \{0,1\}$
+- logit $z = w^\top x + b$
+- predicted probability $\hat y = \sigma(z) = \frac{1}{1+e^{-z}}$
+
+The target distribution is:
+
+$$
+P = [y, 1-y]
+$$
+
+and the model distribution is:
+
+$$
+Q = [\hat y, 1-\hat y]
+$$
+
+So the cross-entropy for one example becomes:
+
+$$
+\ell(y, \hat y) = -\left[y \log \hat y + (1-y) \log(1-\hat y)\right]
+$$
+
+This is the same loss often called **log loss** or **binary cross-entropy (BCE)**.
+
+### Binary BCE gradient derivation
+
+We want to derive:
+
+$$
+\frac{\partial \ell}{\partial w_j}, \qquad \frac{\partial \ell}{\partial b}
+$$
+
+The cleanest route is:
+
+$$
+\frac{\partial \ell}{\partial w_j}
+=
+\frac{\partial \ell}{\partial \hat y}
+\frac{\partial \hat y}{\partial z}
+\frac{\partial z}{\partial w_j}
+$$
+
+#### Step 1: Differentiate the loss with respect to $\hat y$
+
+Start from:
+
+$$
+\ell = -\left[y \log \hat y + (1-y) \log(1-\hat y)\right]
+$$
+
+Differentiate term by term:
+
+$$
+\frac{\partial \ell}{\partial \hat y}
+= -\frac{y}{\hat y} + \frac{1-y}{1-\hat y}
+$$
+
+Put both terms over a common denominator:
+
+$$
+\frac{\partial \ell}{\partial \hat y}
+= \frac{-y(1-\hat y) + (1-y)\hat y}{\hat y(1-\hat y)}
+$$
+
+Expand the numerator:
+
+$$
+-y + y\hat y + \hat y - y\hat y = \hat y - y
+$$
+
+So:
+
+$$
+\frac{\partial \ell}{\partial \hat y}
+= \frac{\hat y - y}{\hat y(1-\hat y)}
+$$
+
+#### Step 2: Differentiate the sigmoid
+
+The sigmoid is:
+
+$$
+\hat y = \sigma(z) = \frac{1}{1+e^{-z}}
+$$
+
+Differentiate it:
+
+$$
+\frac{\partial \hat y}{\partial z}
+= \frac{e^{-z}}{(1+e^{-z})^2}
+$$
+
+Now rewrite this in terms of $\hat y$.
+
+Since
+
+$$
+\hat y = \frac{1}{1+e^{-z}},
+\qquad
+1-\hat y = \frac{e^{-z}}{1+e^{-z}}
+$$
+
+we get:
+
+$$
+\frac{\partial \hat y}{\partial z} = \hat y(1-\hat y)
+$$
+
+#### Step 3: Combine them using the chain rule
+
+Multiply the two derivatives:
+
+$$
+\frac{\partial \ell}{\partial z}
+=
+\frac{\partial \ell}{\partial \hat y}
+\frac{\partial \hat y}{\partial z}
+=
+\frac{\hat y - y}{\hat y(1-\hat y)} \cdot \hat y(1-\hat y)
+= \hat y - y
+$$
+
+This is the key simplification:
+
+$$
+\boxed{\frac{\partial \ell}{\partial z} = \hat y - y}
+$$
+
+#### Step 4: Differentiate the logit with respect to the parameters
+
+The logit is:
+
+$$
+z = \sum_{j=1}^d w_j x_j + b
+$$
+
+So:
+
+$$
+\frac{\partial z}{\partial w_j} = x_j,
+\qquad
+\frac{\partial z}{\partial b} = 1
+$$
+
+Therefore:
+
+$$
+\frac{\partial \ell}{\partial w_j}
+=
+\frac{\partial \ell}{\partial z}
+\frac{\partial z}{\partial w_j}
+=
+(\hat y - y)x_j
+$$
+
+and:
+
+$$
+\frac{\partial \ell}{\partial b}
+=
+\frac{\partial \ell}{\partial z}
+\frac{\partial z}{\partial b}
+=
+\hat y - y
+$$
+
+So the final one-example gradients are:
+
+$$
+\boxed{\frac{\partial \ell}{\partial w_j} = (\hat y-y)x_j}
+\qquad
+\boxed{\frac{\partial \ell}{\partial b} = \hat y-y}
+$$
+
+### Binary BCE over a batch
+
+For a batch of $m$ examples, let:
+
+$$
+J = \frac{1}{m}\sum_{n=1}^m \ell^{(n)}
+$$
+
+Then:
+
+$$
+\frac{\partial J}{\partial w_j}
+=
+\frac{1}{m}\sum_{n=1}^m (\hat y^{(n)} - y^{(n)})x_j^{(n)}
+$$
+
+$$
+\frac{\partial J}{\partial b}
+=
+\frac{1}{m}\sum_{n=1}^m (\hat y^{(n)} - y^{(n)})
+$$
+
+In vector form:
+
+$$
+\nabla_w J = \frac{1}{m} X^\top (\hat y - y)
+$$
+
+assuming $X$ is stored row-wise with shape $m \times d$.
+
+### Multiclass cross-entropy
+
+Now suppose there are $K$ classes. For one example:
+
+- logits $z_1, \dots, z_K$
+- target vector $y \in \mathbb{R}^K$
+- prediction vector $\hat y \in \mathbb{R}^K$
+
+For standard multiclass classification, the target is one-hot encoded:
+
+$$
+y_k =
+\begin{cases}
+1 & \text{if class } k \text{ is correct} \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+and therefore:
+
+$$
+\sum_{k=1}^K y_k = 1
+$$
+
+The softmax output is:
+
+$$
+\hat y_k = \frac{e^{z_k}}{\sum_{r=1}^K e^{z_r}}
+$$
+
+The cross-entropy loss for one example is:
+
+$$
+\ell(y, \hat y) = -\sum_{k=1}^K y_k \log \hat y_k
+$$
+
+If the correct class is $c$, this reduces to:
+
+$$
+\ell = -\log \hat y_c
+$$
+
+because every other $y_k$ is zero.
+
+### Derivative of softmax
+
+To differentiate the multiclass loss, we first need:
+
+$$
+\frac{\partial \hat y_k}{\partial z_i}
+$$
+
+Write softmax as:
+
+$$
+\hat y_k = \frac{e^{z_k}}{\sum_{r=1}^K e^{z_r}}
+$$
+
+Let:
+
+$$
+f = e^{z_k}, \qquad g = \sum_{r=1}^K e^{z_r}
+$$
+
+Then $\hat y_k = f/g$, so by the quotient rule:
+
+$$
+\frac{\partial \hat y_k}{\partial z_i}
+=
+\frac{f'g - fg'}{g^2}
+$$
+
+There are two cases.
+
+#### Case 1: $i = k$
+
+Then:
+
+$$
+f' = e^{z_i}, \qquad g' = e^{z_i}
+$$
+
+So:
+
+$$
+\frac{\partial \hat y_i}{\partial z_i}
+=
+\frac{e^{z_i}\sum_{r=1}^K e^{z_r} - e^{z_i}e^{z_i}}{\left(\sum_{r=1}^K e^{z_r}\right)^2}
+$$
+
+Factor one copy of $e^{z_i}$:
+
+$$
+\frac{\partial \hat y_i}{\partial z_i}
+=
+\frac{e^{z_i}}{\sum_{r=1}^K e^{z_r}}
+\left(1 - \frac{e^{z_i}}{\sum_{r=1}^K e^{z_r}}\right)
+= \hat y_i(1-\hat y_i)
+$$
+
+#### Case 2: $i \neq k$
+
+Then $f$ does not depend on $z_i$, so:
+
+$$
+f' = 0, \qquad g' = e^{z_i}
+$$
+
+Hence:
+
+$$
+\frac{\partial \hat y_k}{\partial z_i}
+=
+\frac{0 \cdot g - e^{z_k}e^{z_i}}{g^2}
+= -\frac{e^{z_k}}{g}\frac{e^{z_i}}{g}
+= -\hat y_k \hat y_i
+$$
+
+Combine both cases into one compact formula:
+
+$$
+\frac{\partial \hat y_k}{\partial z_i}
+= \hat y_k(\delta_{ki} - \hat y_i)
+$$
+
+where $\delta_{ki}$ is the Kronecker delta.
+
+### Multiclass gradient derivation
+
+Now differentiate the loss with respect to the logit $z_i$:
+
+$$
+\frac{\partial \ell}{\partial z_i}
+=
+-\sum_{k=1}^K y_k \frac{\partial \log \hat y_k}{\partial z_i}
+=
+-\sum_{k=1}^K y_k \frac{1}{\hat y_k} \frac{\partial \hat y_k}{\partial z_i}
+$$
+
+Substitute the softmax derivative:
+
+$$
+\frac{\partial \ell}{\partial z_i}
+=
+-\sum_{k=1}^K y_k \frac{1}{\hat y_k} \hat y_k(\delta_{ki} - \hat y_i)
+=
+-\sum_{k=1}^K y_k(\delta_{ki} - \hat y_i)
+$$
+
+Distribute the summation:
+
+$$
+\frac{\partial \ell}{\partial z_i}
+=
+-\sum_{k=1}^K y_k \delta_{ki} + \sum_{k=1}^K y_k \hat y_i
+$$
+
+Now simplify each term:
+
+$$
+\sum_{k=1}^K y_k \delta_{ki} = y_i
+$$
+
+and because $\hat y_i$ does not depend on $k$,
+
+$$
+\sum_{k=1}^K y_k \hat y_i = \hat y_i \sum_{k=1}^K y_k = \hat y_i
+$$
+
+since the one-hot labels sum to 1. Therefore:
+
+$$
+\boxed{\frac{\partial \ell}{\partial z_i} = \hat y_i - y_i}
+$$
+
+This is the multiclass version of the same simplification we saw in the binary case.
+
+### Multiclass gradients with respect to weights and biases
+
+Let the logit for class $i$ be:
+
+$$
+z_i = w_i^\top x + b_i
+$$
+
+Then:
+
+$$
+\frac{\partial z_i}{\partial w_i} = x,
+\qquad
+\frac{\partial z_i}{\partial b_i} = 1
+$$
+
+So:
+
+$$
+\frac{\partial \ell}{\partial w_i} = (\hat y_i - y_i)x,
+\qquad
+\frac{\partial \ell}{\partial b_i} = \hat y_i - y_i
+$$
+
+For a single element $W_{j,i}$ of the weight matrix:
+
+$$
+\frac{\partial \ell}{\partial W_{j,i}} = (\hat y_i - y_i)x_j
+$$
+
+For a batch of $m$ examples:
+
+$$
+\nabla_W J = \frac{1}{m} X^\top(\hat Y - Y)
+$$
+
+again assuming row-wise batches.
+
+### Binary and multiclass are the same pattern
+
+The key result in both cases is:
+
+$$
+\boxed{\frac{\partial \ell}{\partial \text{logit}} = \text{prediction} - \text{target}}
+$$
+
+That is why the weight gradient always has the same form:
+
+$$
+\boxed{\text{gradient} = (\text{prediction} - \text{target}) \times \text{input}}
+$$
+
+Binary cross-entropy is just the two-class special case of categorical cross-entropy. If there are two logits $z_0$ and $z_1$, then:
+
+$$
+\hat y_1 = \frac{e^{z_1}}{e^{z_0} + e^{z_1}}
+= \frac{1}{1 + e^{-(z_1-z_0)}}
+= \sigma(z_1-z_0)
+$$
+
+So a two-class softmax reduces to a sigmoid applied to the logit difference.
+
+### How this maps to PyTorch
+
+PyTorch's loss functions follow the same mathematics, but the API expects **logits**, not probabilities, in the fused loss functions.
+
+#### `nn.BCEWithLogitsLoss`
+
+Use this for binary classification or multi-label classification.
+
+- Input: logits, same shape as the target.
+- Target: floats in $[0,1]$, same shape as the input.
+- Internally: sigmoid + BCE in one stable operation.
+
+So if your model ends with one output neuron for a binary problem, do **not** apply `sigmoid()` inside the model when you train with `nn.BCEWithLogitsLoss`.
+
+#### `nn.CrossEntropyLoss`
+
+Use this for multiclass classification where each example belongs to one class.
+
+- Input: logits of shape $(N, C)$.
+- Target, usual case: class indices of shape $(N)$.
+- Target, optional case: class probabilities of shape $(N, C)$ for soft labels, blended labels, or label smoothing.
+
+For class-index targets, PyTorch defines the unreduced loss as:
+
+$$
+\ell_n = -\log \frac{\exp(x_{n, y_n})}{\sum_{c=1}^C \exp(x_{n,c})}
+$$
+
+This is exactly softmax cross-entropy, and it is equivalent to:
+
+$$
+	ext{LogSoftmax} + \text{NLLLoss}
+$$
+
+#### `nn.NLLLoss`
+
+Use this only if the model already outputs **log-probabilities**.
+
+That means the model output should be:
+
+$$
+\log \hat y_k
+$$
+
+usually produced by `nn.LogSoftmax(dim=1)` or `F.log_softmax(..., dim=1)`.
+
+### Numerical stability: why the fused losses matter
+
+The textbook formulas are written in terms of probabilities, but PyTorch prefers logits because the fused implementations are more numerically stable.
+
+#### Binary case
+
+`nn.BCEWithLogitsLoss` combines sigmoid and BCE in one step. This avoids explicitly computing:
+
+$$
+\log(\sigma(z)) \quad \text{and} \quad \log(1-\sigma(z))
+$$
+
+for very large positive or negative logits.
+
+#### Multiclass case
+
+`nn.CrossEntropyLoss` avoids computing `softmax` and then `log` as separate steps. It uses the fact that:
+
+$$
+-\log \hat y_c = -z_c + \log \sum_{k=1}^K e^{z_k}
+$$
+
+The difficult term is:
+
+$$
+\log \sum_{k=1}^K e^{z_k}
+$$
+
+This is stabilized with the log-sum-exp identity:
+
+$$
+\log \sum_{k=1}^K e^{z_k}
+= a + \log \sum_{k=1}^K e^{z_k-a}
+$$
+
+where we choose:
+
+$$
+a = \max_k z_k
+$$
+
+Then the largest shifted logit is zero, so the largest exponential is $e^0 = 1$, which avoids overflow.
+
+### Final summary to remember
+
+For binary classification:
+
+$$
+\ell = -\left[y \log \hat y + (1-y) \log(1-\hat y)\right],
+\qquad
+\frac{\partial \ell}{\partial z} = \hat y - y
+$$
+
+For multiclass classification:
+
+$$
+\ell = -\sum_{k=1}^K y_k \log \hat y_k,
+\qquad
+\frac{\partial \ell}{\partial z_i} = \hat y_i - y_i
+$$
+
+In both cases, once you know the gradient with respect to the logit, the parameter gradients follow immediately by the chain rule.
