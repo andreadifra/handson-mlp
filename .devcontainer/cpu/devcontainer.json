@@ -16,7 +16,7 @@
   "init": true,
   "userEnvProbe": "none",
   "runArgs": [
-    "--shm-size=1g"
+    "--shm-size=4g"
   ],
   "mounts": [
 		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude/skills,target=/root/.claude/skills,type=bind,readonly",
