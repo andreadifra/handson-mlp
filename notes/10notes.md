@@ -13,13 +13,13 @@
 - [x] Computational graphs, what are they and how they are built in PyTorch
   - [ ] Create mini-differentiation engine as exercise
 
-# Pick-up
+## Pick-up
 - [x] Explore * unpacking 
 - [x] Try debugger with PyTorch code
 - [ ] For question on hyperparameter tuning, try Optuna on a small model and dataset and add database so that you can visualize the search history in the Optuna dashboard.
-  - [ ] Try Marimo notebook for the exercise.
+  - [x] Try Marimo notebook for the exercise.
 - [ ] Go through [Making Deep Learning go Brrrr](https://www.youtube.com/watch?v=WqLKfta5Ijw) and make notes
-- [ ] Notes on Entropy + different classification losses
+- [x] Notes on Entropy + different classification losses
 
 
 # Book Questions
