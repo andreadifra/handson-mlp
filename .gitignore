@@ -19,3 +19,8 @@ dist/
 wheels/
 *.egg-info
 .venv
+**/runs/
+**/__marimo__/session/
+# Ignore db files
+*.db
+*.sqlite

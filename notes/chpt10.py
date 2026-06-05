@@ -33,7 +33,9 @@ def _():
 
 @app.cell
 def _():
-    X = torch.tensor([[1.0, 5.6, 2.3], [2.0, 3.4, 4.5], [3.0, 1.2, 6.7]], device="cuda")
+    X = torch.tensor(
+        [[1.0, 5.6, 2.3], [2.0, 3.4, 4.5], [3.0, 1.2, 6.7]], device="cuda"
+    )
     return
 
 
@@ -125,7 +127,7 @@ def _():
 def _(model, optimizer):
     # 4. Check the mismatch
     model_p = next(model.parameters())
-    opt_p = optimizer.param_groups[0]['params'][0]
+    opt_p = optimizer.param_groups[0]["params"][0]
 
     print(f"Model parameter device: {model_p.device}")
     print(f"Optimizer tracked parameter device: {opt_p.device}")
@@ -167,32 +169,33 @@ def _():
 @app.cell
 def _():
     from torch.autograd import grad
-    # I want to 
+    # I want to
     return (grad,)
 
 
 @app.cell
 def _():
     ## Define the function
-    def f(x,y):
+    def f(x, y):
         return torch.sin(x**2 * y)
+
 
     x = torch.tensor(1.2, requires_grad=True)
     y = torch.tensor(3.4, requires_grad=True)
 
-    z = f(x,y)
+    z = f(x, y)
     return x, y, z
 
 
 @app.cell
 def _(grad, x, y, z):
-    grad(z, [x,y])
+    grad(z, [x, y])
     return
 
 
 @app.cell
 def _(x, y):
-    ## Alternatively 
+    ## Alternatively
 
     out = torch.sin(x**2 * y)
     out.backward()
@@ -220,12 +223,11 @@ def _():
     class DenseLayer(nn.Module):
         def __init__(self, n_features):
             super().__init__()
-            self.linlayer = nn.Sequential(
-                nn.Linear(n_features, 1), nn.ReLU()
-            )
+            self.linlayer = nn.Sequential(nn.Linear(n_features, 1), nn.ReLU())
 
         def forward(self, X):
             return self.linlayer(X)
+
 
     # Instantiate class and move to GPU
     Dense_1 = DenseLayer(10).to("cuda:0")
@@ -235,7 +237,7 @@ def _():
 @app.cell
 def _(Dense_1):
     # Try a sample forward pass
-    dummy_data = torch.randn(5, 10, device = "cuda:0")
+    dummy_data = torch.randn(5, 10, device="cuda:0")
     Dense_1(dummy_data)
     return (dummy_data,)
 
@@ -257,13 +259,14 @@ def _(Dense_1):
             self.weight = nn.Parameter(torch.empty(out_features, in_features))
             self.bias = nn.Parameter(torch.empty(out_features))
 
-            nn.init.kaiming_uniform_(self.weight, a=5 ** 0.5)
+            nn.init.kaiming_uniform_(self.weight, a=5**0.5)
             fan_in = self.weight.size(1)
-            bound = 1 / fan_in ** 0.5
+            bound = 1 / fan_in**0.5
             nn.init.uniform_(self.bias, -bound, bound)
 
         def forward(self, X):
             return torch.relu(F.linear(X, self.weight, self.bias))
+
 
     Dense_2 = DenseLayer2(Dense_1.linlayer[0].in_features).to("cuda:0")
 
@@ -309,8 +312,8 @@ def _():
 
     class CoverTypeDataset(Dataset[tuple[Tensor, Tensor]]):
         def __init__(self, data):
-            self.X   = torch.tensor(data.data, dtype=torch.float32)
-            self.y   = torch.tensor(data.target - 1, dtype=torch.long)
+            self.X = torch.tensor(data.data, dtype=torch.float32)
+            self.y = torch.tensor(data.target - 1, dtype=torch.long)
 
         def __len__(self):
             return len(self.X)
@@ -340,7 +343,7 @@ def _():
 @app.cell
 def _(DataLoader, dataset):
 
-    # Split dataset into train, validation, and test sets.
+    # Split the dataset once so every experiment uses the same partition.
     from sklearn.model_selection import train_test_split
 
     train_indices, test_indices = train_test_split(
@@ -350,45 +353,63 @@ def _(DataLoader, dataset):
         train_indices, test_size=0.25, random_state=42
     )
 
-    # Keep num_workers=0 in marimo: this dataset class lives in a notebook cell,
-    # so worker subprocesses cannot reliably import/pickle it.
-    NUM_WORKERS = 0
+    # Build loaders from a TensorDataset rather than the notebook-local custom
+    # Dataset class. This avoids the `spawn` pickling error that can happen when a
+    # worker process tries to import a class defined inside a notebook cell.
+    #
+    # We still keep `num_workers=0` here because the feature tensors are already in
+    # memory, so extra worker processes only add overhead in this notebook.
+    base_dataset = torch.utils.data.TensorDataset(dataset.X, dataset.y)
+    DEFAULT_BATCH_SIZE = 512
 
 
-    def build_dataloaders(batch_size: int = 512):
-        """Create notebook-safe loaders for fast GPU smoke tests."""
+    def build_dataloaders(batch_size: int = DEFAULT_BATCH_SIZE):
+        """Return train/validation/test loaders for the CoverType tensors.
+
+        Parameters
+        ----------
+        batch_size:
+            Number of examples per batch. This is worth tuning because it changes
+            both training speed and optimization behaviour.
+
+        Notes
+        -----
+        `num_workers` is intentionally fixed at zero. In this notebook the data is
+        already held in memory as tensors, so multiprocessing does not help. The
+        earlier failure was not that marimo forbids workers; it was that the custom
+        dataset class lived inside a notebook cell and could not be reconstructed by
+        spawned worker processes.
+        """
         loader_kwargs = {
             "batch_size": batch_size,
-            "num_workers": NUM_WORKERS,
+            "num_workers": 0,
             "pin_memory": torch.cuda.is_available(),
         }
 
         train_loader = DataLoader(
-            torch.utils.data.Subset(dataset, train_indices),
+            torch.utils.data.Subset(base_dataset, train_indices),
             shuffle=True,
             **loader_kwargs,
         )
         val_loader = DataLoader(
-            torch.utils.data.Subset(dataset, val_indices),
+            torch.utils.data.Subset(base_dataset, val_indices),
             shuffle=False,
             **loader_kwargs,
         )
         test_loader = DataLoader(
-            torch.utils.data.Subset(dataset, test_indices),
+            torch.utils.data.Subset(base_dataset, test_indices),
             shuffle=False,
             **loader_kwargs,
         )
         return train_loader, val_loader, test_loader
 
 
-    train_loader, val_loader, test_loader = build_dataloaders(batch_size=512)
+    train_loader, val_loader, test_loader = build_dataloaders()
 
     print(
         f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}, "
-        f"Test batches: {len(test_loader)} | workers={NUM_WORKERS} | "
-        f"batch_size=512"
+        f"Test batches: {len(test_loader)} | batch_size={DEFAULT_BATCH_SIZE}"
     )
-
     return (build_dataloaders,)
 
 
@@ -431,7 +452,9 @@ def _(CovTypeModel):
     # Build the model:
     ## 54 input features and 7 output classes
 
-    model = CovTypeModel(input_dim = 54, hidden_dims = [128, 256, 64], output_dim=7).to("cuda:0")
+    model = CovTypeModel(
+        input_dim=54, hidden_dims=[128, 256, 64], output_dim=7
+    ).to("cuda:0")
     model
     return (model,)
 
@@ -446,16 +469,15 @@ def _():
 
 @app.cell
 def _():
-    # Training helpers tuned for notebook experimentation.
-    #
-    # Design choices:
-    # - Epoch-level logging is the default because writing TensorBoard events every
-    #   batch can dominate runtime in notebook workflows.
-    # - Loss and accuracy stay on the device during each epoch so we avoid a CPU/GPU
-    #   synchronization on every step.
-    # - Timing is opt-in because accurate CUDA timing requires synchronization, which
-    #   itself slows the loop down.
 
+    # Compact training helpers for notebook use.
+    #
+    # The previous version grew too complicated and made it harder to see the real
+    # bottlenecks. This version keeps only the pieces we actually need:
+    # - move batches onto the current device
+    # - evaluate a model on validation data
+    # - train for a few epochs
+    # - optionally report validation accuracy to Optuna for pruning
     import time
     from datetime import datetime
     from pathlib import Path
@@ -464,12 +486,13 @@ def _():
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-    def _sync_cuda(device: torch.device, enabled: bool) -> None:
-        if enabled and device.type == "cuda":
-            torch.cuda.synchronize(device)
+    def move_batch_to_device(X_batch, y_batch, device: torch.device):
+        """Move one batch onto the selected device.
 
-
-    def _move_batch_to_device(X_batch, y_batch, device: torch.device):
+        When CUDA is available we request a non-blocking transfer. This only helps
+        when the DataLoader uses pinned memory, but it is a harmless default and it
+        keeps the function usable for both CPU and GPU runs.
+        """
         if device.type == "cuda":
             return (
                 X_batch.to(device, non_blocking=True),
@@ -478,22 +501,8 @@ def _():
         return X_batch.to(device), y_batch.to(device)
 
 
-    def _format_hparams(hparams: dict | None) -> dict | None:
-        """TensorBoard hparams must be scalar-like, so stringify complex values."""
-        if not hparams:
-            return None
-
-        formatted = {}
-        for key, value in hparams.items():
-            if isinstance(value, (bool, str, float, int)) or value is None:
-                formatted[key] = value
-            else:
-                formatted[key] = str(value)
-        return formatted
-
-
     @torch.inference_mode()
-    def evaluate_epoch(
+    def evaluate_model(
         model,
         data_loader,
         criterion,
@@ -501,18 +510,37 @@ def _():
         device: torch.device = DEVICE,
         max_batches: int | None = None,
     ):
-        """Run one validation pass and return scalar loss/accuracy."""
+        """Evaluate the model on a validation loader.
+
+        Parameters
+        ----------
+        model:
+            The model to evaluate.
+        data_loader:
+            Validation or test loader.
+        criterion:
+            Loss function used for reporting validation loss.
+        device:
+            Target device.
+        max_batches:
+            Optional cap used for smoke tests. This keeps notebook checks fast.
+
+        Returns
+        -------
+        dict
+            A dictionary with average loss, accuracy, and example count.
+        """
         model.eval()
 
         total_loss = torch.zeros((), device=device)
         total_correct = torch.zeros((), device=device)
         total_examples = 0
 
-        for batch_idx, (X_batch, y_batch) in enumerate(data_loader):
-            if max_batches is not None and batch_idx >= max_batches:
+        for batch_index, (X_batch, y_batch) in enumerate(data_loader):
+            if max_batches is not None and batch_index >= max_batches:
                 break
 
-            X_batch, y_batch = _move_batch_to_device(X_batch, y_batch, device)
+            X_batch, y_batch = move_batch_to_device(X_batch, y_batch, device)
             logits = model(X_batch)
             batch_size = y_batch.size(0)
 
@@ -520,41 +548,71 @@ def _():
             total_correct += (logits.argmax(dim=1) == y_batch).sum()
             total_examples += batch_size
 
-        avg_loss = (total_loss / total_examples).item()
-        accuracy = (total_correct / total_examples).item()
-        return {"loss": avg_loss, "accuracy": accuracy, "examples": total_examples}
+        return {
+            "loss": (total_loss / total_examples).item(),
+            "accuracy": (total_correct / total_examples).item(),
+            "examples": total_examples,
+        }
 
 
-    def train_enhanced(
+    def train_model(
         model,
         optimizer,
         criterion,
         train_loader,
-        valid_loader,
+        val_loader,
         *,
-        epochs=10,
-        start_epoch=0,
+        epochs: int = 10,
         device: torch.device = DEVICE,
-        run_dir="./runs",
+        run_dir: str = "./runs",
         run_name: str | None = None,
-        verbose=True,
-        log_every_n_steps: int | None = None,
-        profile_timing=False,
-        hparams: dict | None = None,
+        verbose: bool = True,
         trial=None,
+        hparams: dict | None = None,
         max_train_batches: int | None = None,
         max_eval_batches: int | None = None,
     ):
-        """Train a model with lightweight TensorBoard logging and optional Optuna pruning."""
+        """Train a model and log epoch metrics to TensorBoard.
 
+        This function is intentionally small and notebook-friendly. It logs only
+        epoch-level metrics because per-batch TensorBoard writes can dominate
+        runtime when many short batches are processed.
+
+        Parameters
+        ----------
+        model, optimizer, criterion:
+            Standard PyTorch training objects.
+        train_loader, val_loader:
+            DataLoaders for training and validation.
+        epochs:
+            Number of full passes over the training data.
+        device:
+            Training device.
+        run_dir, run_name:
+            TensorBoard output location.
+        verbose:
+            Whether to print epoch summaries.
+        trial:
+            Optional Optuna trial. When provided, validation accuracy is reported to
+            Optuna after each epoch so weak trials can be pruned early.
+        hparams:
+            Optional hyperparameters to record in TensorBoard.
+        max_train_batches, max_eval_batches:
+            Optional batch caps used for smoke tests and tiny examples.
+
+        Returns
+        -------
+        tuple[dict, str]
+            Training history and the TensorBoard log directory.
+        """
         run_root = Path(run_dir)
         run_root.mkdir(parents=True, exist_ok=True)
 
         if run_name is None:
             run_name = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-        writer = SummaryWriter(log_dir=str(run_root / run_name))
-        tensorboard_hparams = _format_hparams(hparams)
+        log_dir = str(run_root / run_name)
+        writer = SummaryWriter(log_dir=log_dir)
 
         history = {
             "train_loss": [],
@@ -562,36 +620,23 @@ def _():
             "val_loss": [],
             "val_accuracy": [],
             "epoch_time": [],
-            "profiled_batch_time_ms": [],
+            "best_val_accuracy": 0.0,
+            "best_epoch": 0,
         }
 
-        best_val_accuracy = float("-inf")
-        best_epoch = start_epoch
-        global_step = start_epoch * len(train_loader)
-
-        print(f"\n{'=' * 70}")
-        print(f"Training on {device} | TensorBoard logs: {writer.log_dir}")
-        if start_epoch > 0:
-            print(f"Resuming from epoch {start_epoch}")
-        print(f"{'=' * 70}\n")
-
-        for epoch in range(start_epoch, epochs):
+        for epoch in range(epochs):
             model.train()
             epoch_start = time.perf_counter()
 
             running_loss = torch.zeros((), device=device)
             running_correct = torch.zeros((), device=device)
             seen_examples = 0
-            profiled_batch_times = []
 
-            for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
-                if max_train_batches is not None and batch_idx >= max_train_batches:
+            for batch_index, (X_batch, y_batch) in enumerate(train_loader):
+                if max_train_batches is not None and batch_index >= max_train_batches:
                     break
 
-                _sync_cuda(device, profile_timing)
-                batch_start = time.perf_counter()
-
-                X_batch, y_batch = _move_batch_to_device(X_batch, y_batch, device)
+                X_batch, y_batch = move_batch_to_device(X_batch, y_batch, device)
 
                 optimizer.zero_grad(set_to_none=True)
                 logits = model(X_batch)
@@ -603,63 +648,33 @@ def _():
                 running_loss += loss.detach() * batch_size
                 running_correct += (logits.argmax(dim=1) == y_batch).sum()
                 seen_examples += batch_size
-                global_step += 1
-
-                _sync_cuda(device, profile_timing)
-                if profile_timing:
-                    profiled_batch_times.append((time.perf_counter() - batch_start) * 1000)
-
-                if log_every_n_steps and global_step % log_every_n_steps == 0:
-                    writer.add_scalar("batch/train_loss", loss.detach().item(), global_step)
-                    writer.add_scalar(
-                        "batch/learning_rate",
-                        optimizer.param_groups[0]["lr"],
-                        global_step,
-                    )
-                    if profile_timing and profiled_batch_times:
-                        writer.add_scalar(
-                            "batch/profiled_time_ms",
-                            profiled_batch_times[-1],
-                            global_step,
-                        )
 
             train_loss = (running_loss / seen_examples).item()
             train_accuracy = (running_correct / seen_examples).item()
-
-            val_metrics = evaluate_epoch(
+            val_metrics = evaluate_model(
                 model,
-                valid_loader,
+                val_loader,
                 criterion,
                 device=device,
                 max_batches=max_eval_batches,
             )
-
             epoch_time = time.perf_counter() - epoch_start
-            mean_batch_time = (
-                sum(profiled_batch_times) / len(profiled_batch_times)
-                if profiled_batch_times
-                else None
-            )
 
             history["train_loss"].append(train_loss)
             history["train_accuracy"].append(train_accuracy)
             history["val_loss"].append(val_metrics["loss"])
             history["val_accuracy"].append(val_metrics["accuracy"])
             history["epoch_time"].append(epoch_time)
-            history["profiled_batch_time_ms"].append(mean_batch_time)
 
-            if val_metrics["accuracy"] > best_val_accuracy:
-                best_val_accuracy = val_metrics["accuracy"]
-                best_epoch = epoch + 1
+            if val_metrics["accuracy"] > history["best_val_accuracy"]:
+                history["best_val_accuracy"] = val_metrics["accuracy"]
+                history["best_epoch"] = epoch + 1
 
             writer.add_scalar("epoch/train_loss", train_loss, epoch + 1)
             writer.add_scalar("epoch/train_accuracy", train_accuracy, epoch + 1)
             writer.add_scalar("epoch/val_loss", val_metrics["loss"], epoch + 1)
             writer.add_scalar("epoch/val_accuracy", val_metrics["accuracy"], epoch + 1)
-            writer.add_scalar("epoch/epoch_time_sec", epoch_time, epoch + 1)
-            if mean_batch_time is not None:
-                writer.add_scalar("epoch/profiled_batch_time_ms", mean_batch_time, epoch + 1)
-            writer.flush()
+            writer.add_scalar("epoch/time_sec", epoch_time, epoch + 1)
 
             if verbose:
                 print(f"Epoch {epoch + 1}/{epochs}")
@@ -668,64 +683,44 @@ def _():
                     f"Val loss: {val_metrics['loss']:.4f} | Val acc: {val_metrics['accuracy']:.4f}"
                 )
                 print(f"  Epoch time: {epoch_time:.2f}s")
-                if mean_batch_time is not None:
-                    print(
-                        f"  Profiled batch time: {mean_batch_time:.2f}ms "
-                        f"(includes CUDA synchronization overhead)"
-                    )
 
             if trial is not None:
                 import optuna
 
                 trial.report(val_metrics["accuracy"], step=epoch)
                 if trial.should_prune():
-                    writer.add_scalar("optuna/pruned_epoch", epoch + 1, epoch + 1)
-                    if tensorboard_hparams:
-                        writer.add_hparams(
-                            tensorboard_hparams,
-                            {
-                                "hparam/best_val_accuracy": best_val_accuracy,
-                                "hparam/final_val_accuracy": val_metrics["accuracy"],
-                            },
-                        )
-                    writer.flush()
                     writer.close()
                     raise optuna.TrialPruned()
 
-        history["best_val_accuracy"] = best_val_accuracy
-        history["best_epoch"] = best_epoch
-
-        if tensorboard_hparams:
+        # Record hyperparameters at the end of the run. TensorBoard expects scalar
+        # values, so we stringify non-scalar objects such as hidden-dimension tuples.
+        if hparams:
             writer.add_hparams(
-                tensorboard_hparams,
                 {
-                    "hparam/best_val_accuracy": best_val_accuracy,
+                    key: value if isinstance(value, (bool, int, float, str)) else str(value)
+                    for key, value in hparams.items()
+                },
+                {
+                    "hparam/best_val_accuracy": history["best_val_accuracy"],
                     "hparam/final_val_accuracy": history["val_accuracy"][-1],
-                    "hparam/final_train_loss": history["train_loss"][-1],
                 },
             )
 
-        writer.flush()
         writer.close()
-
-        total_time = sum(history["epoch_time"])
-        print(f"\n{'=' * 70}")
-        print(f"Training completed in {total_time:.2f}s")
-        print(f"Best validation accuracy: {best_val_accuracy:.4f} at epoch {best_epoch}")
-        print(f"TensorBoard logs saved to: {run_root / run_name}")
-        print(f"{'=' * 70}\n")
-
-        return history, str(run_root / run_name)
+        return history, log_dir
 
 
-    return DEVICE, Path, train_enhanced
+    return DEVICE, train_model
 
 
 @app.cell
 def _(DEVICE, model):
 
-    ## Initialise variables for the training loop.
-    # Keep the baseline simple here; Optuna explores the larger search space below.
+    # Baseline training objects.
+    #
+    # We keep the optimizer fixed to SGD with momentum=0.9. That makes the Optuna
+    # search easier to reason about because only learning rate, batch size, and the
+    # hidden-layer layout are changing.
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), momentum=0.9, lr=0.001)
 
@@ -734,172 +729,205 @@ def _(DEVICE, model):
 
 
 @app.cell
-def _(DEVICE, build_dataloaders, criterion, model, optimizer, train_enhanced):
+def _(DEVICE, build_dataloaders, criterion, model, optimizer, train_model):
 
-    # Run the smallest useful training smoke test.
-    # If this is not fast, stop and debug the environment before scaling up.
+    # Minimal smoke test.
+    #
+    # This is intentionally tiny: one epoch, five training batches, and five
+    # validation batches. If even this takes a long time, the problem is with the
+    # environment or data path rather than the model architecture.
     smoke_train_loader, smoke_val_loader, _ = build_dataloaders(batch_size=512)
 
-    history, log_dir = train_enhanced(
+    history, log_dir = train_model(
         model,
         optimizer,
         criterion,
         smoke_train_loader,
         smoke_val_loader,
         epochs=1,
-        start_epoch=0,
         device=DEVICE,
         run_dir="./runs",
         run_name="smoke_test",
         verbose=True,
-        log_every_n_steps=None,
-        profile_timing=False,
-        max_train_batches=10,
-        max_eval_batches=10,
+        max_train_batches=5,
+        max_eval_batches=5,
     )
 
     print(history)
-
     return
 
 
 @app.cell
-def _(
-    CovTypeModel,
-    DEVICE,
-    Path,
-    build_dataloaders,
-    criterion,
-    train_enhanced,
-):
-
-    ## Optional: Optuna Hyperparameter Optimization with pruning and TensorBoard metadata
-    #
-    # Best-practice notes:
-    # - The trial now actually rebuilds the dataloaders with the sampled batch size.
-    # - We report validation accuracy after each epoch so Optuna can prune weak trials.
-    # - Each trial gets its own TensorBoard directory and logs hparams via
-    #   SummaryWriter.add_hparams(), which works cleanly in a PyTorch-only setup.
+def _(CovTypeModel, DEVICE, build_dataloaders, criterion, train_model):
+    ## Optional: Optuna search helpers.
     import optuna
-    from optuna.trial import TrialState
+
+    # Optuna stores parameter choices inside the study database. The earlier version
+    # used tuples/lists directly for `hidden_dims`, which caused reload mismatches in
+    # persisted studies. We therefore encode each architecture as a stable string
+    # key and decode it inside the objective function.
+    HIDDEN_DIM_OPTIONS = {
+        "64-128": (64, 128),
+        "128-256": (128, 256),
+        "128-256-64": (128, 256, 64),
+        "256-512-128": (256, 512, 128),
+    }
+
+    DEFAULT_STUDY_NAME = "covertype_hpo_v2"
 
 
-    def objective(trial):
-        lr = trial.suggest_float("lr", 1e-4, 5e-3, log=True)
-        batch_size = trial.suggest_categorical("batch_size", [64, 128, 256, 512])
-        hidden_dims_choice = trial.suggest_categorical(
-            "hidden_dims",
-            [(64, 128), (128, 256), (128, 256, 64), (256, 512, 128)],
-        )
-        optimizer_name = trial.suggest_categorical("optimizer", ["sgd", "adamw"])
+    def make_objective(
+        *,
+        epochs: int = 5,
+        max_train_batches: int | None = None,
+        max_eval_batches: int | None = None,
+    ):
+        """Create an Optuna objective for the CoverType MLP.
 
-        if optimizer_name == "sgd":
-            momentum = trial.suggest_float("momentum", 0.8, 0.99)
-        else:
-            momentum = None
+        Parameters
+        ----------
+        epochs:
+            Number of epochs per trial.
+        max_train_batches, max_eval_batches:
+            Optional caps for very small smoke tests. Leave these as `None` for a
+            real study.
+        """
 
-        weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
+        def objective(trial):
+            lr = trial.suggest_float("lr", 1e-4, 5e-2, log=True)
+            batch_size = trial.suggest_categorical(
+                "batch_size", [128, 256, 512, 1024]
+            )
+            hidden_dims_key = trial.suggest_categorical(
+                "hidden_dims_key",
+                list(HIDDEN_DIM_OPTIONS.keys()),
+            )
+            hidden_dims = HIDDEN_DIM_OPTIONS[hidden_dims_key]
 
-        trial_model = CovTypeModel(
-            input_dim=54,
-            hidden_dims=hidden_dims_choice,
-            output_dim=7,
-        ).to(DEVICE)
-
-        if optimizer_name == "sgd":
+            trial_model = CovTypeModel(
+                input_dim=54,
+                hidden_dims=hidden_dims,
+                output_dim=7,
+            ).to(DEVICE)
             trial_optimizer = optim.SGD(
                 trial_model.parameters(),
                 lr=lr,
-                momentum=momentum,
-                weight_decay=weight_decay,
+                momentum=0.9,
             )
-        else:
-            trial_optimizer = optim.AdamW(
-                trial_model.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,
+            trial_train_loader, trial_val_loader, _ = build_dataloaders(
+                batch_size=batch_size
             )
 
-        trial_train_loader, trial_val_loader, _ = build_dataloaders(batch_size=batch_size)
-        run_name = f"trial_{trial.number:04d}"
-        expected_log_dir = str(Path("./runs/optuna") / run_name)
-
-        try:
-            history, log_dir = train_enhanced(
+            history, log_dir = train_model(
                 trial_model,
                 trial_optimizer,
                 criterion,
                 trial_train_loader,
                 trial_val_loader,
-                epochs=5,
-                start_epoch=0,
+                epochs=epochs,
                 device=DEVICE,
                 run_dir="./runs/optuna",
-                run_name=run_name,
+                run_name=f"trial_{trial.number:04d}",
                 verbose=False,
-                log_every_n_steps=250,
-                profile_timing=False,
-                hparams=trial.params,
                 trial=trial,
+                hparams={
+                    "lr": lr,
+                    "batch_size": batch_size,
+                    "hidden_dims_key": hidden_dims_key,
+                    "hidden_dims": hidden_dims,
+                },
+                max_train_batches=max_train_batches,
+                max_eval_batches=max_eval_batches,
             )
-        except optuna.TrialPruned:
-            trial.set_user_attr("tensorboard_log_dir", expected_log_dir)
-            raise
 
-        trial.set_user_attr("tensorboard_log_dir", log_dir)
-        trial.set_user_attr("best_epoch", history["best_epoch"])
-        return history["best_val_accuracy"]
+            trial.set_user_attr("tensorboard_log_dir", log_dir)
+            trial.set_user_attr("hidden_dims", list(hidden_dims))
+            trial.set_user_attr("best_epoch", history["best_epoch"])
+            return history["best_val_accuracy"]
+
+        return objective
 
 
-    sampler = optuna.samplers.TPESampler(seed=42)
-    pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1)
+    def create_optuna_study(
+        *,
+        study_name: str = DEFAULT_STUDY_NAME,
+        storage: str = "sqlite:///optuna_study.db",
+    ):
+        """Create or reload the CoverType Optuna study.
 
-    study = optuna.create_study(
-        direction="maximize",
-        sampler=sampler,
-        pruner=pruner,
-        storage="sqlite:///optuna_study.db",
-        study_name="covertype_hpo",
-        load_if_exists=True,
+        Notes
+        -----
+        We default to `covertype_hpo_v2` instead of the earlier study name because
+        Optuna persists the search-space schema. The old study used an incompatible
+        representation for the architecture parameter, which is why
+        `study.optimize(...)` later raised a `ValueError` during reload.
+        """
+        sampler = optuna.samplers.TPESampler(seed=42)
+        pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1)
+        return optuna.create_study(
+            direction="maximize",
+            sampler=sampler,
+            pruner=pruner,
+            storage=storage,
+            study_name=study_name,
+            load_if_exists=True,
+        )
+
+
+    def run_optuna_search(
+        *,
+        n_trials: int = 10,
+        epochs: int = 5,
+        study_name: str = DEFAULT_STUDY_NAME,
+        max_train_batches: int | None = None,
+        max_eval_batches: int | None = None,
+    ):
+        """Run the Optuna search and return the completed study.
+
+        This helper is separate from the definition cell on purpose. It prevents the
+        notebook from launching a full study every time an upstream cell changes.
+        """
+        study = create_optuna_study(study_name=study_name)
+        study.optimize(
+            make_objective(
+                epochs=epochs,
+                max_train_batches=max_train_batches,
+                max_eval_batches=max_eval_batches,
+            ),
+            n_trials=n_trials,
+            show_progress_bar=True,
+        )
+        return study
+
+
+    print(
+        "Optuna helpers ready. Example: "
+        "run_optuna_search(n_trials=1, epochs=1, max_train_batches=5, max_eval_batches=5, study_name='covertype_hpo_smoke')"
     )
-    study.optimize(objective, n_trials=10, show_progress_bar=True)
+    return (run_optuna_search,)
 
-    pruned_trials = [t for t in study.trials if t.state == TrialState.PRUNED]
-    complete_trials = [t for t in study.trials if t.state == TrialState.COMPLETE]
 
-    print(f"Completed trials: {len(complete_trials)} | Pruned trials: {len(pruned_trials)}")
-    print(f"Best trial: {study.best_trial.number}")
-    print(f"Best value: {study.best_value:.4f}")
-    print(f"Best params: {study.best_params}")
-
-    # TensorBoard:
-    # tensorboard --logdir=./runs/optuna
-    # Optuna dashboard:
-    # optuna-dashboard sqlite:///optuna_study.db
+@app.cell
+def _(run_optuna_search):
+    run_optuna_search()
     return
 
 
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ## Training Review Summary
+    ## Training Notes
 
-    ### What changed
-
-    - **Lower-overhead TensorBoard logging**: the main loop now logs compact epoch-level metrics by default and only logs batch metrics when you explicitly request it.
-    - **Accurate timing guidance**: CUDA timings are now treated as an opt-in profiling mode, because synchronized timings are slower but accurate.
-    - **Cleaner metric handling**: accuracy and loss are accumulated on-device during the epoch instead of forcing CPU synchronization every batch.
-    - **Better data loading defaults**: the data loaders now use `pin_memory=True` on CUDA and worker processes when available.
-    - **Optuna improvements**: sampled batch size is now actually used, each trial gets its own TensorBoard run directory, and Optuna pruning is enabled through `trial.report(...)` / `trial.should_prune()`.
-
-    ### Why the original run looked slow
-
-    The previous loop reported a very small batch time (`~3ms`) but a long epoch time (`~174s`) because the batch timing did **not** include TensorBoard writes and was not reliable for CUDA profiling. In the old version, the expensive per-batch `writer.add_scalar(...)` calls happened **after** the measured batch timer, so the metric understated the real end-to-end cost.
-
-    ### TensorBoard best practice for this notebook
-
-    For a PyTorch notebook, `SummaryWriter` plus `add_hparams(...)` is the lightest way to track Optuna trials. Optuna's dedicated TensorBoard callback exists in the integration docs, but it lives in the separate `optuna-integration` package and pulls in TensorFlow-oriented dependencies. That is heavier than needed for this workflow.
+    - The training utilities have been simplified so the notebook is easier to read and debug.
+    - `build_dataloaders()` keeps `num_workers=0` by design because the data already lives in memory as tensors and multiprocessing was slower here.
+    - The Optuna section now searches only `lr`, `batch_size`, and `hidden_dims` while keeping `SGD(momentum=0.9)` fixed.
+    - The earlier Optuna `ValueError` came from reusing a persisted study whose old architecture parameter encoding no longer matched the new code. The notebook now uses stable string keys such as `128-256-64` and a new default study name.
     """)
+    return
+
+
+@app.cell
+def _():
     return
 
 
