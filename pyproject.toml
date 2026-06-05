@@ -58,6 +58,7 @@ dependencies = [
     "pydantic-ai>=1.61.0",
     "ruff>=0.15.14",
     "pyrefly>=1.0.0",
+    "optuna-dashboard>=0.20.0",
 ]
 
 [project.optional-dependencies]
