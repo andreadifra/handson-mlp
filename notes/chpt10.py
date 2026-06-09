@@ -9,16 +9,19 @@ with app.setup:
     import numpy as np
     import optuna
     import time
-    import torch
-    import torch.nn as nn
-    import torch.nn.functional as F
-    import torch.optim as optim
+
     from datetime import datetime
     from pathlib import Path
+
     from sklearn.datasets import fetch_covtype
     from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import StandardScaler
     from threading import Event
+
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    import torch.optim as optim
     from torch import Tensor
     from torch.autograd import grad
     from torch.profiler import ProfilerActivity, profile, record_function, schedule
@@ -166,18 +169,6 @@ def _():
     return
 
 
-@app.cell(disabled=True)
-def _():
-    # Consolidated into the preceding optimizer demo cell.
-    return
-
-
-@app.cell(disabled=True)
-def _():
-    # Consolidated into the preceding optimizer demo cell.
-    return
-
-
 @app.cell
 def _(optimizer):
     optimizer.load_state_dict
@@ -249,12 +240,13 @@ def _():
         def forward(self, X: torch.Tensor) -> torch.Tensor:
             return self.linlayer(X)
 
-    return
+    return (DenseLayer,)
 
 
 @app.cell
-def _(Dense_1):
-    # Consolidated into the custom Dense module cell.Dense_1 = DenseLayer(10).to(DEFAULT_DEVICE)
+def _(DenseLayer):
+    # Consolidated into the custom Dense module cell.
+    Dense_1 = DenseLayer(10).to(DEFAULT_DEVICE)
 
     # Run one forward/backward pass so we can inspect gradients and compare against
     # the parameter-based implementation below.
@@ -265,7 +257,7 @@ def _(Dense_1):
     print("DenseLayer output shape:", dense_1_out.shape)
     for name, param in Dense_1.named_parameters():
         print(f"Parameter: {name}, gradient shape: {None if param.grad is None else tuple(param.grad.shape)}")
-    return
+    return (Dense_1,)
 
 
 @app.cell
@@ -307,7 +299,7 @@ app._unparsable_cell(
     with torch.no_grad():
         Dense_2.weight.copy_(Dense_1.linlayer[0].weight)
         Dense_2.bias.copy_(Dense_1.linlayer[0].bias)
-    
+
     dense_2_out = Dense_2(dummy_data)
     print("Outputs match:", torch.allclose(dense_1_out.detach(), dense_2_out.detach()))
     print("DenseLayer2 output shape:", dense_2_out.shape)the parameter-based Dense module cell.
@@ -316,7 +308,7 @@ app._unparsable_cell(
 )
 
 
-@app.cell(hide_code=True)
+@app.cell(column=1, hide_code=True)
 def _():
     mo.md(r"""
     ### 15. Build and train a classification MLP on the CoverType dataset
@@ -430,7 +422,7 @@ def _(dataset):
         f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}, "
         f"Test batches: {len(test_loader)} | batch_size={DEFAULT_BATCH_SIZE}"
     )
-    return (build_dataloaders,)
+    return build_dataloaders, train_loader, val_loader
 
 
 @app.cell(hide_code=True)
@@ -491,7 +483,7 @@ def _(CovTypeModel):
     return (model,)
 
 
-@app.cell(hide_code=True)
+@app.cell(column=2, hide_code=True)
 def _():
     mo.md(r"""
     Step 4: Train the model on the GPU and tro to reach 93% accuracy on the test set. For this, you will likely have to perform hyperparameter search to find the right number of layers and neurons per layer, a good learning rate and batch size and so on, optionally using Optuna for this.
@@ -503,9 +495,9 @@ def _():
 def _():
     # Compact training helpers for notebook use.
     #
-    # These helpers are shared by the smoke test, the manual training UI, and the
-    # Optuna search. They keep the default output minimal while still exposing more
-    # detailed performance metrics when `verbose=True`.
+    # These helpers are shared by ad hoc notebook experiments and the Optuna search.
+    # They keep the default output minimal while still exposing more detailed
+    # performance metrics when `verbose=True`.
     DEVICE = DEFAULT_DEVICE
 
 
@@ -596,7 +588,7 @@ def _():
         log_interval: int | None = None,
         profile_training: bool = False,
         profile_dir: str | None = None,
-        cancel_event=None,
+        stop_event=None,
         progress_callback=None,
     ):
         """Train a model and return the run history plus TensorBoard log path.
@@ -629,10 +621,17 @@ def _():
             Enable a short profiler trace during the first epoch.
         profile_dir:
             Output directory for profiler traces.
-        cancel_event:
-            Optional `threading.Event` used by the UI interrupt button.
+        stop_event:
+            Optional threading.Event that can be set to request early stopping after the current epoch.
         progress_callback:
-            Optional callback used by the marimo progress bar UI.
+            Optional callback used by notebook progress bar UIs.
+
+        Returns
+        -----------
+        history:
+            Dictionary containing training/validation metrics and performance stats.
+        log_dir:
+            Path where TensorBoard logs were written.
         """
         run_root = Path(run_dir)
         run_root.mkdir(parents=True, exist_ok=True)
@@ -656,7 +655,7 @@ def _():
             "avg_data_time_ms": [],
             "best_val_accuracy": 0.0,
             "best_epoch": 0,
-            "cancelled": False,
+            "stopped_early": False,
         }
 
         for epoch in range(epochs):
@@ -697,9 +696,6 @@ def _():
             try:
                 for batch_index, (X_batch, y_batch) in enumerate(train_loader):
                     if max_train_batches is not None and batch_index >= max_train_batches:
-                        break
-                    if cancel_event is not None and cancel_event.is_set():
-                        history["cancelled"] = True
                         break
 
                     data_ready = time.perf_counter()
@@ -821,7 +817,8 @@ def _():
                     subtitle=f"Epoch {epoch + 1}/{epochs} complete | val_acc={val_metrics['accuracy']:.4f}",
                 )
 
-            if history["cancelled"]:
+            if stop_event is not None and stop_event.is_set():
+                history["stopped_early"] = True
                 break
 
         if hparams and history["val_accuracy"]:
@@ -849,58 +846,6 @@ def _(DEVICE, model):
 
     print(f"Training device: {DEVICE}")
     return criterion, optimizer
-
-
-@app.cell
-def _():
-    training_cancel_event = Event()
-    training_runtime = {"running": False, "thread": None}
-    training_job = mo.ui.dropdown(
-        options={"Smoke test": "smoke", "Best model": "best_model"},
-        value="smoke",
-        label="Training job",
-    )
-    profile_training_checkbox = mo.ui.checkbox(
-        value=False,
-        label="Profile first epoch",
-    )
-    start_training_button = mo.ui.run_button(label="Start training")
-    interrupt_training_button = mo.ui.button(
-        label="Interrupt training",
-        on_change=lambda _: training_cancel_event.set(),
-    )
-
-    mo.vstack(
-        [
-            mo.md(r"""
-            ### Training Controls
-
-            This section follows marimo best practice for expensive work:
-
-            - training starts only when you click `Start training`
-            - the progress bar is updated from the worker thread via a callback
-            - `Interrupt training` sets a cancellation event, which the training loop
-              checks between batches so the run can stop cleanly
-            - the profiling checkbox enables a short first-epoch profiler trace for
-              diagnosis without making every normal run slower
-            """),
-            mo.hstack(
-                [
-                    training_job,
-                    profile_training_checkbox,
-                    start_training_button,
-                    interrupt_training_button,
-                ]
-            ),
-        ]
-    )
-    return (
-        profile_training_checkbox,
-        start_training_button,
-        training_cancel_event,
-        training_job,
-        training_runtime,
-    )
 
 
 @app.cell
@@ -1030,16 +975,15 @@ def _(CovTypeModel, DEVICE, build_dataloaders, criterion, train_model):
         "Optuna helpers ready. Example: "
         "run_optuna_search(n_trials=1, epochs=1, max_train_batches=5, max_eval_batches=5, study_name='covertype_hpo_smoke')"
     )
-    return (HIDDEN_DIM_OPTIONS,)
+    return
 
 
-@app.cell
+@app.cell(column=3)
 def _():
     # Optuna is manual on purpose.
     #
     # Example:
     # run_optuna_search(n_trials=10, epochs=5)
-    None
     return
 
 
@@ -1058,17 +1002,13 @@ def _():
 
 @app.cell
 def _(
-    CovTypeModel,
     DEVICE,
-    HIDDEN_DIM_OPTIONS,
-    build_dataloaders,
     criterion,
-    profile_training_checkbox,
-    start_training_button,
+    model,
+    optimizer,
+    train_loader,
     train_model,
-    training_cancel_event,
-    training_job,
-    training_runtime,
+    val_loader,
 ):
     BEST_PARAMS = {
         "lr": 0.0010253509690168502,
@@ -1076,110 +1016,108 @@ def _(
         "hidden_dims_key": "128-256-64",
     }
 
-    mo.stop(
-        not start_training_button.value,
-        mo.md("Choose a training job above and click **Start training**."),
-    )
+    training_runtime_state = globals().get("_training_runtime")
+    if training_runtime_state is None:
+        training_runtime_state = {
+            "thread": None,
+            "running": False,
+            "stop_event": Event(),
+            "history": None,
+            "log_dir": None,
+        }
+        globals()["_training_runtime"] = training_runtime_state
 
-    if training_runtime["running"]:
-        mo.md(
-            "Training is already running. Use **Interrupt training** and wait for the worker to finish."
-        )
+    training_stop_event = training_runtime_state["stop_event"]
+
+    if training_runtime_state["running"]:
+        mo.md("Training is already running. Use the stop button in the next cell to stop after the current epoch.")
     else:
-        training_cancel_event.clear()
+        training_stop_event.clear()
+        epochs = 1
 
-        def launch_training_job():
-            """Run the selected training job in a background thread.
-
-            marimo recommends keeping long-running work out of the main reactive
-            path. Running training in `mo.Thread` keeps the notebook responsive while
-            the progress bar and interrupt button continue to work.
-            """
-            training_runtime["running"] = True
+        def training_loop():
+            thread = mo.current_thread()
+            training_runtime_state["running"] = True
             try:
-                if training_job.value == "smoke":
-                    hidden_dims = (128, 256, 64)
-                    batch_size = 512
-                    epochs = 1
-                    max_train_batches = 5
-                    max_eval_batches = 5
-                    lr = 0.001
-                    run_dir = "./runs"
-                    run_name = "smoke_test_ui"
-                    title = "Smoke test"
-                else:
-                    hidden_dims = HIDDEN_DIM_OPTIONS[BEST_PARAMS["hidden_dims_key"]]
-                    batch_size = BEST_PARAMS["batch_size"]
-                    epochs = 10
-                    max_train_batches = None
-                    max_eval_batches = None
-                    lr = BEST_PARAMS["lr"]
-                    run_dir = "./runs/mcp_training"
-                    run_name = "best_model"
-                    title = "Best model training"
-
-                model_for_run = CovTypeModel(
-                    input_dim=54,
-                    hidden_dims=hidden_dims,
-                    output_dim=7,
-                ).to(DEVICE)
-                optimizer_for_run = optim.SGD(
-                    model_for_run.parameters(), lr=lr, momentum=0.9
-                )
-                train_loader_for_run, val_loader_for_run, _ = build_dataloaders(
-                    batch_size=batch_size
-                )
-                total_train_batches = max_train_batches or len(train_loader_for_run)
-
                 with mo.status.progress_bar(
-                    total=epochs * total_train_batches,
-                    title=title,
-                    subtitle="Preparing training loop",
+                    total=epochs * len(train_loader),
+                    # title="Manual training",
+                    # subtitle="Preparing training loop",
                 ) as pbar:
 
-                    def update_progress(*, increment=1, subtitle=None):
-                        pbar.update(increment=increment, subtitle=subtitle)
+                    def update_progress(**kwargs):
+                        if thread.should_exit:
+                            training_stop_event.set()
+                        pbar.update(**kwargs)
 
-                    history, log_dir = train_model(
-                        model_for_run,
-                        optimizer_for_run,
+                    history_1, log_dir = train_model(
+                        model,
+                        optimizer,
                         criterion,
-                        train_loader_for_run,
-                        val_loader_for_run,
+                        train_loader,
+                        val_loader,
                         epochs=epochs,
                         device=DEVICE,
-                        run_dir=run_dir,
-                        run_name=run_name,
-                        show_epoch_summary=True,
+                        run_dir="./runs/test_3",
                         verbose=True,
-                        max_train_batches=max_train_batches,
-                        max_eval_batches=max_eval_batches,
-                        profile_training=profile_training_checkbox.value,
-                        cancel_event=training_cancel_event,
+                        stop_event=training_stop_event,
                         progress_callback=update_progress,
                     )
 
-                    if history["cancelled"]:
-                        pbar.update(increment=0, subtitle="Training cancelled by user")
-                        print("Training cancelled by user.")
-                    else:
-                        pbar.update(increment=0, subtitle="Training complete")
-                        print(f"TensorBoard logs: {log_dir}")
-                        print(
-                            f"Best validation accuracy: {history['best_val_accuracy']:.4f} "
-                            f"(epoch {history['best_epoch']})"
-                        )
-            finally:
-                training_runtime["running"] = False
-                training_runtime["thread"] = None
+                training_runtime_state["history"] = history_1
+                training_runtime_state["log_dir"] = log_dir
 
-        worker = mo.Thread(target=launch_training_job)
-        training_runtime["thread"] = worker
+                if history_1["stopped_early"]:
+                    print("Training stopped after the current epoch by request.")
+                else:
+                    print("Training completed the requested epochs.")
+                print(f"TensorBoard logs: {log_dir}")
+            finally:
+                training_runtime_state["running"] = False
+                training_runtime_state["thread"] = None
+
+        worker = mo.Thread(target=training_loop)
+        training_runtime_state["thread"] = worker
         worker.start()
-        mo.md(
-            "Training started in the background. The progress bar above reports "
-            "batch-level progress, and the interrupt button will stop training "
-            "after the current batch finishes."
+        mo.md("Training started in the background. Use the stop button in the next cell to stop after the current epoch.")
+    return
+
+
+@app.cell
+def _():
+    training_runtime_view = globals().get("_training_runtime")
+
+    if training_runtime_view is None:
+        mo.md("Run the training cell above first to initialize the stop control.")
+    else:
+        stop_event_view = training_runtime_view["stop_event"]
+
+        def request_stop_after_epoch(_):
+            if training_runtime_view["running"]:
+                stop_event_view.set()
+                print("Training will stop after the current epoch finishes.")
+            else:
+                print("No training thread is currently running.")
+
+        stop_button = mo.ui.button(
+            label="Stop after current epoch",
+            kind="warn",
+            on_click=request_stop_after_epoch,
+        )
+
+        status = "running" if training_runtime_view["running"] else "idle"
+        requested = "yes" if stop_event_view.is_set() else "no"
+
+        mo.vstack(
+            [
+                mo.md(
+                    f"""### Training Stop Control
+
+    - training thread status: `{status}`
+    - stop requested: `{requested}`"""
+                ),
+                stop_button,
+            ]
         )
     return
 
