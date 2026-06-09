@@ -39,6 +39,46 @@ Marimo is not Jupyter. Agents working here must respect marimo's execution model
 - The last expression in a cell is automatically displayed.
 - Avoid hidden state and side effects that make reruns confusing.
 
+## Documentation-first rule
+
+For marimo-related advice, code generation, API usage, notebook patterns, and best
+practices, prefer current documentation over memory.
+
+- Use the `documentation-lookup` skill often when the task involves marimo APIs,
+  layouts, widgets, forms, dataframes, plotting integrations, app structure, or
+  notebook interaction patterns.
+- Treat the documentation lookup result as the default source of truth for current
+  marimo usage and recommendations.
+- Do this especially when suggesting patterns, introducing new marimo features, or
+  changing notebook structure in ways that depend on framework behavior.
+- If guidance from memory conflicts with current docs, follow the docs.
+- For trivial edits that do not depend on framework behavior, documentation lookup
+  is optional, but agents should still bias toward using it rather than guessing.
+
+## Preferred skill routing
+
+This workspace has several installed skills relevant to marimo. Prefer using them
+when the task matches instead of handling everything manually.
+
+- Use `documentation-lookup` for current marimo documentation, API questions, and
+  best-practice verification.
+- Use `marimo-notebook` when creating or reshaping a marimo notebook file.
+- Use `marimo-pair` when working inside a running marimo notebook session or
+  kernel.
+- Use `jupyter-to-marimo` when converting an existing `ipynb` notebook to marimo.
+- Use `streamlit-to-marimo` when migrating a Streamlit artifact into marimo.
+- Use `marimo-batch` when preparing a notebook for scheduled or batch execution.
+- Use `wasm-compatibility` when checking whether a notebook can run in WASM or in
+  browser-constrained environments.
+- Use `anywidget-generator` when building custom anywidget-based interactive
+  components for notebooks.
+- Use `implement-paper`, `implement-paper-auto`, or `auto-paper-demo` when the
+  task is to turn a research paper into a marimo notebook or demo.
+
+When a task could benefit from both current docs and a marimo-specific skill, use
+documentation lookup first to verify the framework behavior, then apply the
+specialized skill.
+
 ## Primary notebook conventions
 
 Use these conventions by default for notebooks in `notes/`.

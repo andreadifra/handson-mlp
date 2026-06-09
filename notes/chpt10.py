@@ -989,136 +989,100 @@ def _():
 
 @app.cell(hide_code=True)
 def _():
-    mo.md(r"""
-    ## Training Notes
+    cancelled = Event()
+    training_result = {}
 
-    - The training utilities have been simplified so the notebook is easier to read and debug.
-    - `build_dataloaders()` keeps `num_workers=0` by design because the data already lives in memory as tensors and multiprocessing was slower here.
-    - The Optuna section now searches only `lr`, `batch_size`, and `hidden_dims` while keeping `SGD(momentum=0.9)` fixed.
-    - The earlier Optuna `ValueError` came from reusing a persisted study whose old architecture parameter encoding no longer matched the new code. The notebook now uses stable string keys such as `128-256-64` and a new default study name.
-    """)
-    return
+    mo.md(
+        "Shared training state: `cancelled` is the stop event and "
+        "`training_result` stores the most recent `history` and `log_dir`."
+    )
+    return cancelled, training_result
 
 
 @app.cell
 def _(
     DEVICE,
+    cancelled,
     criterion,
     model,
     optimizer,
     train_loader,
     train_model,
+    training_result,
     val_loader,
 ):
+    # Best parameters found in the
     BEST_PARAMS = {
         "lr": 0.0010253509690168502,
         "batch_size": 128,
         "hidden_dims_key": "128-256-64",
     }
 
-    training_runtime_state = globals().get("_training_runtime")
-    if training_runtime_state is None:
-        training_runtime_state = {
-            "thread": None,
-            "running": False,
-            "stop_event": Event(),
-            "history": None,
-            "log_dir": None,
-        }
-        globals()["_training_runtime"] = training_runtime_state
 
-    training_stop_event = training_runtime_state["stop_event"]
+    epochs = 4
 
-    if training_runtime_state["running"]:
-        mo.md("Training is already running. Use the stop button in the next cell to stop after the current epoch.")
-    else:
-        training_stop_event.clear()
-        epochs = 1
+    def training_loop():
+        with mo.status.progress_bar(
+            total=epochs * len(train_loader),
+            # title="Manual training",
+            # subtitle="Preparing training loop",
+        ) as pbar:
+            history, log_dir = train_model(
+                model,
+                optimizer,
+                criterion,
+                train_loader,
+                val_loader,
+                epochs=epochs,
+                device=DEVICE,
+                run_dir="./runs/test_3",
+                verbose=True,
+                stop_event=cancelled,
+                progress_callback=lambda **kwargs: pbar.update(**kwargs),
+            )
 
-        def training_loop():
-            thread = mo.current_thread()
-            training_runtime_state["running"] = True
-            try:
-                with mo.status.progress_bar(
-                    total=epochs * len(train_loader),
-                    # title="Manual training",
-                    # subtitle="Preparing training loop",
-                ) as pbar:
+        if history["stopped_early"]:
+            print("Training stopped after the current epoch by request.")
+        else:
+            print("Training completed the requested epochs.")
+        print(f"TensorBoard logs: {log_dir}")
 
-                    def update_progress(**kwargs):
-                        if thread.should_exit:
-                            training_stop_event.set()
-                        pbar.update(**kwargs)
+        training_result["history"] = history
+        training_result["log_dir"] = log_dir
 
-                    history_1, log_dir = train_model(
-                        model,
-                        optimizer,
-                        criterion,
-                        train_loader,
-                        val_loader,
-                        epochs=epochs,
-                        device=DEVICE,
-                        run_dir="./runs/test_3",
-                        verbose=True,
-                        stop_event=training_stop_event,
-                        progress_callback=update_progress,
-                    )
 
-                training_runtime_state["history"] = history_1
-                training_runtime_state["log_dir"] = log_dir
-
-                if history_1["stopped_early"]:
-                    print("Training stopped after the current epoch by request.")
-                else:
-                    print("Training completed the requested epochs.")
-                print(f"TensorBoard logs: {log_dir}")
-            finally:
-                training_runtime_state["running"] = False
-                training_runtime_state["thread"] = None
-
-        worker = mo.Thread(target=training_loop)
-        training_runtime_state["thread"] = worker
-        worker.start()
-        mo.md("Training started in the background. Use the stop button in the next cell to stop after the current epoch.")
+    cancelled.clear()
+    training_result.clear()
+    mo.Thread(target=training_loop).start()
+    mo.md(
+        "Training started in the background. Use the stop button in the cell above to stop after the current epoch."
+    )
     return
 
 
 @app.cell
-def _():
-    training_runtime_view = globals().get("_training_runtime")
+def _(cancelled):
+    cancel = mo.ui.button(
+        label="Stop after current epoch",
+        kind="warn",
+        on_change=lambda _: cancelled.set(),
+    )
 
-    if training_runtime_view is None:
-        mo.md("Run the training cell above first to initialize the stop control.")
-    else:
-        stop_event_view = training_runtime_view["stop_event"]
+    mo.vstack(
+        [
+            mo.md(
+                "Click **Stop after current epoch** while the training thread is running. "
+                "Rerunning the training cell automatically clears the previous stop request."
+            ),
+            cancel,
+        ]
+    )
+    return
 
-        def request_stop_after_epoch(_):
-            if training_runtime_view["running"]:
-                stop_event_view.set()
-                print("Training will stop after the current epoch finishes.")
-            else:
-                print("No training thread is currently running.")
 
-        stop_button = mo.ui.button(
-            label="Stop after current epoch",
-            kind="warn",
-            on_click=request_stop_after_epoch,
-        )
-
-        status = "running" if training_runtime_view["running"] else "idle"
-        requested = "yes" if stop_event_view.is_set() else "no"
-
-        mo.vstack(
-            [
-                mo.md(
-                    f"""### Training Stop Control
-
-    - training thread status: `{status}`
-    - stop requested: `{requested}`"""
-                ),
-                stop_button,
-            ]
-        )
+@app.cell
+def _(training_result):
+    training_result
     return
 
 
