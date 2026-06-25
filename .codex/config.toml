@@ -1,0 +1,8 @@
+# This repository is commonly opened inside a devcontainer, which already acts
+# as the primary isolation boundary. In that environment Codex's inner Linux
+# sandbox can fail to start because nested user namespaces are unavailable.
+#
+# Use danger-full-access inside the container so Codex does not attempt to
+# create a second sandbox layer with bubblewrap.
+default_permissions = ":danger-full-access"
+approval_policy = "on-request"

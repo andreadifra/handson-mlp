@@ -6,12 +6,13 @@ app = marimo.App(width="columns")
 with app.setup:
     import contextlib
     import marimo as mo
-    import numpy as np
     import optuna
     import time
 
+    from dataclasses import dataclass
     from datetime import datetime
     from pathlib import Path
+    from typing import Any, Callable
 
     from sklearn.datasets import fetch_covtype
     from sklearn.model_selection import train_test_split
@@ -28,9 +29,13 @@ with app.setup:
     from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
     from torch.utils.tensorboard import SummaryWriter
 
+
+@app.cell
+def _():
     # Shared device used throughout the notebook. Cells should use this instead of
     # hard-coding CUDA strings so the notebook still runs on CPU-only machines.
     DEFAULT_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return (DEFAULT_DEVICE,)
 
 
 @app.cell(hide_code=True)
@@ -50,7 +55,7 @@ def _():
 
 
 @app.cell
-def _():
+def _(DEFAULT_DEVICE):
     X = torch.tensor(
         [[1.0, 5.6, 2.3], [2.0, 3.4, 4.5], [3.0, 1.2, 6.7]],
         device=DEFAULT_DEVICE,
@@ -130,7 +135,7 @@ def _():
 
 
 @app.cell
-def _():
+def _(DEFAULT_DEVICE):
     # 1. Define a simple model for the optimizer/device demo.
     #
     # This cell intentionally keeps the entire experiment together so the notebook
@@ -224,7 +229,6 @@ def _():
     # Set seed for reproducibility so the module comparison below is stable.
     torch.manual_seed(42)
 
-
     class DenseLayer(nn.Module):
         """Reference dense block implemented with high-level PyTorch modules.
 
@@ -244,7 +248,7 @@ def _():
 
 
 @app.cell
-def _(DenseLayer):
+def _(DEFAULT_DEVICE, DenseLayer):
     # Consolidated into the custom Dense module cell.
     Dense_1 = DenseLayer(10).to(DEFAULT_DEVICE)
 
@@ -257,55 +261,52 @@ def _(DenseLayer):
     print("DenseLayer output shape:", dense_1_out.shape)
     for name, param in Dense_1.named_parameters():
         print(f"Parameter: {name}, gradient shape: {None if param.grad is None else tuple(param.grad.shape)}")
-    return (Dense_1,)
+    return Dense_1, dense_1_out, dummy_data
+
+
+@app.class_definition
+class DenseLayer2(nn.Module):
+    """Dense block implemented with explicit parameters plus functional ops.
+
+    The layer owns `weight` and `bias` directly via `nn.Parameter`, then uses
+    `F.linear` followed by `torch.relu` in `forward`. This is the lower-level
+    equivalent of `DenseLayer` and is useful for understanding how `nn.Linear`
+    is built.
+    """
+
+    def __init__(self, in_features: int, out_features: int = 1):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        self.bias = nn.Parameter(torch.empty(out_features))
+
+        # Match PyTorch's standard linear-layer initialization.
+        nn.init.kaiming_uniform_(self.weight, a=5**0.5)
+        fan_in = self.weight.size(1)
+        bound = 1 / fan_in**0.5
+        nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        return torch.relu(F.linear(X, self.weight, self.bias))
 
 
 @app.cell
-def _(Dense_1):
-    class DenseLayer2(nn.Module):
-        """Dense block implemented with explicit parameters plus functional ops.
-
-        The layer owns `weight` and `bias` directly via `nn.Parameter`, then uses
-        `F.linear` followed by `torch.relu` in `forward`. This is the lower-level
-        equivalent of `DenseLayer` and is useful for understanding how `nn.Linear`
-        is built.
-        """
-
-        def __init__(self, in_features: int, out_features: int = 1):
-            super().__init__()
-            self.weight = nn.Parameter(torch.empty(out_features, in_features))
-            self.bias = nn.Parameter(torch.empty(out_features))
-
-            # Match PyTorch's standard linear-layer initialization.
-            nn.init.kaiming_uniform_(self.weight, a=5**0.5)
-            fan_in = self.weight.size(1)
-            bound = 1 / fan_in**0.5
-            nn.init.uniform_(self.bias, -bound, bound)
-
-        def forward(self, X: torch.Tensor) -> torch.Tensor:
-            return torch.relu(F.linear(X, self.weight, self.bias))
-
-
+def _(Dense_1, dense_1_out, dummy_data):
+    # Copy DenseLayer's learned parameters so the two implementations can be
+    # compared directly on the same input batch.
     Dense_2 = DenseLayer2(Dense_1.linlayer[0].in_features).to(
         next(Dense_1.parameters()).device
     )
-    return (DenseLayer2,)
-
-
-app._unparsable_cell(
-    r"""
-    # Copy DenseLayer's learned parameters so the two implementations can be
-    # compared directly on the same input batch.
     with torch.no_grad():
         Dense_2.weight.copy_(Dense_1.linlayer[0].weight)
         Dense_2.bias.copy_(Dense_1.linlayer[0].bias)
 
     dense_2_out = Dense_2(dummy_data)
-    print("Outputs match:", torch.allclose(dense_1_out.detach(), dense_2_out.detach()))
-    print("DenseLayer2 output shape:", dense_2_out.shape)the parameter-based Dense module cell.
-    """,
-    name="_"
-)
+    print(
+        "Outputs match:",
+        torch.allclose(dense_1_out.detach(), dense_2_out.detach()),
+    )
+    print("DenseLayer2 output shape:", dense_2_out.shape)
+    return
 
 
 @app.cell(column=1, hide_code=True)
@@ -381,16 +382,38 @@ def _(dataset):
     # memory. This keeps the data path simple and avoids notebook-specific worker
     # pickling issues.
     base_dataset = TensorDataset(dataset.X, dataset.y)
-    DEFAULT_BATCH_SIZE = 512
+    DEFAULT_TRAIN_BATCH_SIZE = 512
+    DEFAULT_EVAL_BATCH_SIZE_MULTIPLIER = 4
 
 
-    def build_dataloaders(batch_size: int = DEFAULT_BATCH_SIZE):
+    def _auto_eval_batch_size(train_batch_size: int, split_size: int) -> int:
+        """Pick a larger evaluation batch size without exceeding the split size."""
+        return max(train_batch_size, min(split_size, train_batch_size * DEFAULT_EVAL_BATCH_SIZE_MULTIPLIER))
+
+
+    def build_dataloaders(
+        train_batch_size: int = DEFAULT_TRAIN_BATCH_SIZE,
+        eval_batch_size: int | None = None,
+        test_batch_size: int | None = None,
+        *,
+        source_dataset=base_dataset,
+        train_idx=train_indices,
+        val_idx=val_indices,
+        test_idx=test_indices,
+    ):
         """Return train/validation/test loaders for the CoverType tensors.
 
         Parameters
         ----------
-        batch_size:
-            Number of examples per batch.
+        train_batch_size:
+            Mini-batch size used for gradient updates.
+        eval_batch_size, test_batch_size:
+            Batch sizes used for validation and test passes. When omitted, these
+            default to a larger multiple of the training batch size because they do
+            not affect optimization dynamics.
+        source_dataset, train_idx, val_idx, test_idx:
+            Explicit dataset and split inputs. Defaults keep notebook calls compact
+            while avoiding hidden closure-only behavior.
 
         Notes
         -----
@@ -398,20 +421,30 @@ def _(dataset):
         lives in memory as tensors. Adding worker processes here increased overhead
         and did not improve throughput in practice.
         """
-        loader_kwargs = {
-            "batch_size": batch_size,
+        eval_batch_size = eval_batch_size or _auto_eval_batch_size(train_batch_size, len(val_idx))
+        test_batch_size = test_batch_size or _auto_eval_batch_size(train_batch_size, len(test_idx))
+        base_loader_kwargs = {
             "num_workers": 0,
             "pin_memory": torch.cuda.is_available(),
         }
 
         train_loader = DataLoader(
-            Subset(base_dataset, train_indices), shuffle=True, **loader_kwargs
+            Subset(source_dataset, train_idx),
+            batch_size=train_batch_size,
+            shuffle=True,
+            **base_loader_kwargs,
         )
         val_loader = DataLoader(
-            Subset(base_dataset, val_indices), shuffle=False, **loader_kwargs
+            Subset(source_dataset, val_idx),
+            batch_size=eval_batch_size,
+            shuffle=False,
+            **base_loader_kwargs,
         )
         test_loader = DataLoader(
-            Subset(base_dataset, test_indices), shuffle=False, **loader_kwargs
+            Subset(source_dataset, test_idx),
+            batch_size=test_batch_size,
+            shuffle=False,
+            **base_loader_kwargs,
         )
         return train_loader, val_loader, test_loader
 
@@ -420,9 +453,10 @@ def _(dataset):
 
     print(
         f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}, "
-        f"Test batches: {len(test_loader)} | batch_size={DEFAULT_BATCH_SIZE}"
+        f"Test batches: {len(test_loader)} | train_batch_size={DEFAULT_TRAIN_BATCH_SIZE}, "
+        f"eval_batch_size={val_loader.batch_size}, test_batch_size={test_loader.batch_size}"
     )
-    return build_dataloaders, train_loader, val_loader
+    return (build_dataloaders,)
 
 
 @app.cell(hide_code=True)
@@ -433,41 +467,38 @@ def _():
     return
 
 
-@app.cell
-def _(DenseLayer2):
-    class CovTypeModel(nn.Module):
-        """MLP classifier for the CoverType dataset.
+@app.class_definition
+class CovTypeModel(nn.Module):
+    """MLP classifier for the CoverType dataset.
 
-        Parameters
-        ----------
-        input_dim:
-            Number of input features.
-        hidden_dims:
-            Sequence of hidden-layer widths. Each hidden layer uses `DenseLayer2`.
-        output_dim:
-            Number of classes.
-        """
+    Parameters
+    ----------
+    input_dim:
+        Number of input features.
+    hidden_dims:
+        Sequence of hidden-layer widths. Each hidden layer uses `DenseLayer2`.
+    output_dim:
+        Number of classes.
+    """
 
-        def __init__(self, input_dim: int, hidden_dims, output_dim: int):
-            super().__init__()
-            layers = []
-            prev_dim = input_dim
+    def __init__(self, input_dim: int, hidden_dims, output_dim: int):
+        super().__init__()
+        layers = []
+        prev_dim = input_dim
 
-            for h_dim in hidden_dims:
-                layers.append(DenseLayer2(prev_dim, h_dim))
-                prev_dim = h_dim
+        for h_dim in hidden_dims:
+            layers.append(DenseLayer2(prev_dim, h_dim))
+            prev_dim = h_dim
 
-            layers.append(nn.Linear(prev_dim, output_dim))
-            self.model = nn.Sequential(*layers)
+        layers.append(nn.Linear(prev_dim, output_dim))
+        self.model = nn.Sequential(*layers)
 
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            return self.model(x)
-
-    return (CovTypeModel,)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
 
 
 @app.cell
-def _(CovTypeModel):
+def _(DEFAULT_DEVICE):
     # Build the baseline model for the CoverType classifier.
     #
     # The final architecture used for longer runs can be replaced later by the
@@ -492,173 +523,434 @@ def _():
 
 
 @app.cell
-def _():
+def _(DEFAULT_DEVICE):
     # Compact training helpers for notebook use.
     #
     # These helpers are shared by ad hoc notebook experiments and the Optuna search.
     # They keep the default output minimal while still exposing more detailed
     # performance metrics when `verbose=True`.
     DEVICE = DEFAULT_DEVICE
+    return (DEVICE,)
 
 
-    def move_batch_to_device(
-        X_batch: torch.Tensor,
-        y_batch: torch.Tensor,
-        device: torch.device,
-    ):
-        """Move one mini-batch to the target device.
+@app.function
+def move_batch_to_device(X_batch: torch.Tensor, y_batch: torch.Tensor, device: torch.device):
+    """Move one mini-batch to the target device.
 
-        We request non-blocking transfers on CUDA so pinned-memory loaders can take
-        advantage of asynchronous host-to-device copies.
-        """
-        if device.type == "cuda":
-            return (
-                X_batch.to(device, non_blocking=True),
-                y_batch.to(device, non_blocking=True),
-            )
-        return X_batch.to(device), y_batch.to(device)
+    Parameters
+    ----------
+    X_batch:
+        Batch of input tensors as returned by a PyTorch ``DataLoader``.
+    y_batch:
+        Batch of target tensors paired with ``X_batch``.
+    device:
+        Target ``torch.device``. CUDA transfers request ``non_blocking=True`` so
+        DataLoaders with pinned memory can overlap host-to-device copies with GPU
+        work. CPU runs use ordinary blocking transfers.
+
+    Returns
+    -------
+    X_batch, y_batch:
+        The same tensors moved to ``device``.
+    """
+    if device.type == "cuda":
+        return (
+            X_batch.to(device, non_blocking=True),
+            y_batch.to(device, non_blocking=True),
+        )
+    return X_batch.to(device), y_batch.to(device)
 
 
-    @torch.inference_mode()
-    def evaluate_model(
-        model,
-        data_loader,
-        criterion=None,
-        *,
-        device: torch.device = DEVICE,
-        max_batches: int | None = None,
-    ):
-        """Evaluate a model on validation or test data.
+@app.function
+def evaluate_classification_model(
+    model: torch.nn.Module,
+    data_loader: torch.utils.data.DataLoader,
+    criterion: torch.nn.Module | None = None,
+    *,
+    device: torch.device,
+    max_batches: int | None = None,
+) -> dict[str, float]:
+    """Evaluate a classification model on a data loader.
 
-        Parameters
-        ----------
-        model:
-            Model to evaluate.
-        data_loader:
-            Validation or test loader.
-        criterion:
-            Optional loss function. When omitted, the function reports accuracy only.
-        device:
-            Device on which evaluation should run.
-        max_batches:
-            Optional cap used for smoke tests.
-        """
-        model.eval()
-        total_correct = torch.zeros((), device=device)
-        total_examples = 0
-        total_loss = torch.zeros((), device=device) if criterion is not None else None
+    This is the default evaluator for the CoverType exercise. It follows the
+    small protocol expected by ``train_model``: return a dictionary containing
+    the primary metric key, an example count, and optionally loss.
 
+    Parameters
+    ----------
+    model:
+        PyTorch classifier that returns class logits with shape
+        ``(batch_size, n_classes)``.
+    data_loader:
+        Validation or test loader yielding ``(X_batch, y_batch)`` pairs.
+    criterion:
+        Optional loss function. When provided, the returned metrics include
+        average ``loss`` weighted by batch size.
+    device:
+        Device on which evaluation should run.
+    max_batches:
+        Optional cap on evaluation batches, mainly for smoke tests and quick
+        Optuna trials.
+
+    Returns
+    -------
+    dict[str, float]
+        Metrics with ``accuracy`` as the primary classification metric,
+        ``examples`` as the evaluated row count, and optionally ``loss``.
+    """
+    model.eval()
+    total_correct = torch.zeros((), device=device)
+    total_examples = 0
+    total_loss = torch.zeros((), device=device) if criterion is not None else None
+
+    with torch.inference_mode():
         for batch_index, (X_batch, y_batch) in enumerate(data_loader):
             if max_batches is not None and batch_index >= max_batches:
                 break
+
             X_batch, y_batch = move_batch_to_device(X_batch, y_batch, device)
             logits = model(X_batch)
             batch_size = y_batch.size(0)
+
             if total_loss is not None:
                 total_loss += criterion(logits, y_batch).detach() * batch_size
             total_correct += (logits.argmax(dim=1) == y_batch).sum()
             total_examples += batch_size
 
-        metrics = {
-            "accuracy": (total_correct / total_examples).item(),
-            "examples": total_examples,
-        }
-        if total_loss is not None:
-            metrics["loss"] = (total_loss / total_examples).item()
-        return metrics
+    if total_examples == 0:
+        raise ValueError("Cannot evaluate an empty data loader or zero selected batches.")
+
+    metrics = {
+        "accuracy": (total_correct / total_examples).item(),
+        "examples": float(total_examples),
+    }
+    if total_loss is not None:
+        metrics["loss"] = (total_loss / total_examples).item()
+    return metrics
 
 
-    def train_model(
-        model,
-        optimizer,
-        criterion,
-        train_loader,
-        val_loader,
-        *,
-        epochs: int = 10,
-        device: torch.device = DEVICE,
-        run_dir: str = "./runs",
-        run_name: str | None = None,
-        show_epoch_summary: bool = True,
-        verbose: bool = False,
-        trial=None,
-        hparams: dict | None = None,
-        max_train_batches: int | None = None,
-        max_eval_batches: int | None = None,
-        log_interval: int | None = None,
-        profile_training: bool = False,
-        profile_dir: str | None = None,
-        stop_event=None,
-        progress_callback=None,
-    ):
-        """Train a model and return the run history plus TensorBoard log path.
+@app.function
+def make_training_history(
+    history: dict | None = None,
+    *,
+    primary_metric: str,
+    higher_is_better: bool,
+) -> dict:
+    """Return a metric-agnostic history dictionary for ``train_model``.
 
-        Parameters
-        ----------
-        model, optimizer, criterion:
-            Standard PyTorch training objects.
-        train_loader, val_loader:
-            Data loaders for training and validation.
-        epochs:
-            Number of passes over the training data.
-        device:
-            Device on which training should run.
-        run_dir, run_name:
-            TensorBoard output location.
-        show_epoch_summary:
-            Print the basic epoch metrics every epoch.
-        verbose:
-            Print extra performance diagnostics such as throughput and CUDA memory.
-        trial:
-            Optional Optuna trial for pruning/reporting.
-        hparams:
-            Optional hyperparameters to record in TensorBoard.
-        max_train_batches, max_eval_batches:
-            Optional caps for smoke tests.
-        log_interval:
-            Optional batch interval for progress prints inside long epochs.
-        profile_training:
-            Enable a short profiler trace during the first epoch.
-        profile_dir:
-            Output directory for profiler traces.
-        stop_event:
-            Optional threading.Event that can be set to request early stopping after the current epoch.
-        progress_callback:
-            Optional callback used by notebook progress bar UIs.
+    The history stores generic names such as ``val_metric`` and
+    ``best_val_metric``; the actual meaning is recorded separately in
+    ``primary_metric``. That keeps the training loop reusable for classification
+    metrics like accuracy and regression metrics like RMSE or MAE.
 
-        Returns
-        -----------
-        history:
-            Dictionary containing training/validation metrics and performance stats.
-        log_dir:
-            Path where TensorBoard logs were written.
-        """
-        run_root = Path(run_dir)
-        run_root.mkdir(parents=True, exist_ok=True)
+    Parameters
+    ----------
+    history:
+        Existing history to continue, usually from an earlier call to
+        ``train_model`` in the same notebook session. Older accuracy-specific
+        histories are migrated when possible.
+    primary_metric:
+        Name of the validation metric used for model selection, such as
+        ``"accuracy"``, ``"rmse"``, or ``"mae"``. This must match a key returned
+        by the evaluator used in ``train_model``.
+    higher_is_better:
+        Whether larger values of ``primary_metric`` represent improvement.
+        Use ``True`` for metrics such as accuracy and ``False`` for metrics such
+        as loss or RMSE.
 
-        if run_name is None:
-            run_name = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    Returns
+    -------
+    dict
+        Mutable history dictionary with lists for epoch metrics, best-metric
+        metadata, checkpoint path metadata, and early-stop status.
+    """
+    default_history = {
+        "train_loss": [],
+        "val_loss": [],
+        "val_metric": [],
+        "val_metrics": {},
+        "epoch_time": [],
+        "samples_per_sec": [],
+        "avg_step_time_ms": [],
+        "avg_data_time_ms": [],
+        "best_val_metric": None,
+        "best_epoch": 0,
+        "primary_metric": primary_metric,
+        "higher_is_better": higher_is_better,
+        "stopped_early": False,
+        "checkpoint_path": None,
+    }
+    if history is None:
+        return default_history
 
-        log_dir = str(run_root / run_name)
-        writer = SummaryWriter(log_dir=log_dir)
+    existing_metric = history.get("primary_metric")
+    if existing_metric is not None and existing_metric != primary_metric:
+        raise ValueError(
+            "Cannot continue a history tracked with "
+            f"primary_metric={existing_metric!r} using {primary_metric!r}."
+        )
 
-        if profile_dir is None:
-            profile_dir = str(run_root / "profiler" / run_name)
+    existing_direction = history.get("higher_is_better")
+    if existing_direction is not None and existing_direction != higher_is_better:
+        raise ValueError("Cannot continue a history with a different metric direction.")
 
-        history = {
-            "train_loss": [],
-            "train_accuracy": [],
-            "val_accuracy": [],
-            "epoch_time": [],
-            "samples_per_sec": [],
-            "avg_step_time_ms": [],
-            "avg_data_time_ms": [],
-            "best_val_accuracy": 0.0,
-            "best_epoch": 0,
-            "stopped_early": False,
-        }
+    # Migrate older accuracy-specific histories so long-running notebook state can
+    # continue with the generic metric names.
+    if "val_metric" not in history:
+        legacy_key = f"val_{primary_metric}"
+        if legacy_key in history:
+            history["val_metric"] = list(history[legacy_key])
+        elif primary_metric == "accuracy" and "val_accuracy" in history:
+            history["val_metric"] = list(history["val_accuracy"])
 
+    if "best_val_metric" not in history and primary_metric == "accuracy":
+        history["best_val_metric"] = history.get("best_val_accuracy")
+
+    for key, value in default_history.items():
+        history.setdefault(key, value)
+
+    if history["best_val_metric"] is None and history["val_metric"]:
+        best_epoch, best_metric = (
+            max(enumerate(history["val_metric"], start=1), key=lambda item: item[1])
+            if higher_is_better
+            else min(enumerate(history["val_metric"], start=1), key=lambda item: item[1])
+        )
+        history["best_epoch"] = best_epoch
+        history["best_val_metric"] = best_metric
+
+    history["primary_metric"] = primary_metric
+    history["higher_is_better"] = higher_is_better
+    history["stopped_early"] = False
+    return history
+
+
+@app.function
+def save_training_checkpoint(
+    checkpoint_path,
+    *,
+    model,
+    optimizer,
+    history: dict,
+    epoch: int,
+    metadata: dict | None = None,
+):
+    """Save the state needed to resume a model trained by ``train_model``.
+
+    The checkpoint stores the generic best validation metric plus the metric
+    name/direction so the file remains meaningful for classification and
+    regression runs.
+
+    Parameters
+    ----------
+    checkpoint_path:
+        Destination path for the checkpoint file. Parent directories are created
+        automatically.
+    model:
+        PyTorch model whose ``state_dict`` should be saved.
+    optimizer:
+        Optimizer whose ``state_dict`` should be saved so training can continue
+        with the same momentum/adaptive state.
+    history:
+        Training history returned by ``train_model``. The checkpoint records this
+        verbatim, including ``best_val_metric`` and ``primary_metric``.
+    epoch:
+        One-based epoch number corresponding to the saved model state.
+    metadata:
+        Optional extra context, such as Optuna study name, trial number, or
+        hyperparameters.
+
+    Returns
+    -------
+    checkpoint_path:
+        The path that was written, returned for convenient logging.
+    """
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "history": history,
+            "best_val_metric": history["best_val_metric"],
+            "best_epoch": history["best_epoch"],
+            "primary_metric": history["primary_metric"],
+            "higher_is_better": history["higher_is_better"],
+            "metadata": metadata or {},
+        },
+        checkpoint_path,
+    )
+    return checkpoint_path
+
+
+@app.function
+def tensorboard_metric_name(metric_name: str) -> str:
+    """Return a TensorBoard-safe tag suffix for a metric name.
+
+    Parameters
+    ----------
+    metric_name:
+        Human-readable metric name, such as ``"accuracy"`` or ``"root mean / sq"``.
+
+    Returns
+    -------
+    str
+        Lowercase tag fragment with spaces and slashes replaced by underscores.
+    """
+    return metric_name.strip().lower().replace(" ", "_").replace("/", "_")
+
+
+@app.function
+def train_model(
+    model,
+    optimizer,
+    criterion,
+    train_loader,
+    val_loader,
+    *,
+    epochs: int = 10,
+    device: torch.device,
+    evaluate_fn=None,
+    primary_metric: str = "accuracy",
+    higher_is_better: bool = True,
+    run_dir: str = "./runs",
+    run_name: str | None = None,
+    start_epoch: int = 0,
+    history: dict | None = None,
+    checkpoint_dir=None,
+    save_best: bool = False,
+    checkpoint_metadata: dict | None = None,
+    show_epoch_summary: bool = True,
+    verbose: bool = False,
+    trial=None,
+    hparams: dict | None = None,
+    max_train_batches: int | None = None,
+    max_eval_batches: int | None = None,
+    log_interval: int | None = None,
+    profile_training: bool = False,
+    profile_dir: str | None = None,
+    stop_event=None,
+    progress_callback=None,
+):
+    """Train a PyTorch model and return metric-agnostic run history.
+
+    ``train_model`` owns the mechanics that are common across supervised tasks:
+    gradient updates, validation, TensorBoard logging, optional profiling,
+    pruning, cancellation, and best-checkpoint saving. Task-specific validation
+    is delegated to ``evaluate_fn``.
+
+    Parameters
+    ----------
+    model:
+        PyTorch model to train. It should return predictions compatible with
+        ``criterion`` for each ``X_batch`` from ``train_loader``.
+    optimizer:
+        Optimizer already constructed for ``model.parameters()``.
+    criterion:
+        Loss function used for the training step. It is also passed to
+        ``evaluate_fn`` so validation loss can be reported when appropriate.
+    train_loader, val_loader:
+        DataLoaders yielding ``(X_batch, y_batch)`` pairs for training and
+        validation.
+    epochs:
+        Number of additional epochs to run from ``start_epoch``.
+    device:
+        Target ``torch.device`` for model inputs, targets, losses, and metrics.
+    evaluate_fn:
+        Validation function with the signature
+        ``evaluate_fn(model, val_loader, criterion, device=device, max_batches=...)``.
+        It must return a dictionary containing ``primary_metric`` and may also
+        return ``loss`` plus any other scalar metrics to store in history.
+        When omitted, ``evaluate_classification_model`` is used.
+    primary_metric:
+        Key in the evaluator output used for checkpointing, Optuna reporting,
+        progress text, and TensorBoard metric names. Examples: ``"accuracy"``,
+        ``"rmse"``, or ``"mae"``.
+    higher_is_better:
+        Direction for ``primary_metric``. Use ``True`` for accuracy-like metrics
+        and ``False`` for loss/error metrics.
+    run_dir, run_name:
+        TensorBoard output location. Reusing the same ``run_name`` appends event
+        files to the same TensorBoard run.
+    start_epoch:
+        Epoch offset used for TensorBoard global steps and printed epoch numbers
+        when continuing a live run.
+    history:
+        Existing history to append to when continuing a run. Its metric name and
+        direction must match ``primary_metric`` and ``higher_is_better``.
+    checkpoint_dir:
+        Directory for the best-model checkpoint. If omitted and ``save_best`` is
+        true, checkpoints are written under ``log_dir/checkpoints``.
+    save_best:
+        Save ``best.pt`` whenever ``primary_metric`` improves. No checkpoint is
+        written unless this is true.
+    checkpoint_metadata:
+        Optional metadata stored inside each checkpoint, for example Optuna study
+        name, trial number, or hyperparameters.
+    show_epoch_summary:
+        Print compact epoch metrics after validation.
+    verbose:
+        Print extra diagnostics such as throughput, CUDA memory, and optional
+        profiler location.
+    trial:
+        Optional Optuna trial. When provided, the validation metric is reported
+        each epoch and pruning is honored.
+    hparams:
+        Optional hyperparameters to record with TensorBoard's HParams plugin.
+        Values that are not bool/int/float/str are stringified for compatibility.
+    max_train_batches, max_eval_batches:
+        Optional batch caps for smoke tests or deliberately short Optuna trials.
+    log_interval:
+        Optional training-batch interval for loss prints when ``verbose`` is true.
+    profile_training:
+        Enable a short PyTorch profiler trace during the first epoch.
+    profile_dir:
+        Output directory for profiler traces. Defaults under ``run_dir``.
+    stop_event:
+        Optional ``threading.Event``. If set after an epoch, training stops cleanly
+        and ``history["stopped_early"]`` is marked true.
+    progress_callback:
+        Optional callback for notebook progress UIs. It is called with keyword
+        arguments such as ``increment`` and ``subtitle``.
+
+    Returns
+    -------
+    history:
+        Dictionary containing training loss, validation metrics, performance
+        stats, best-metric metadata, checkpoint path, and early-stop status.
+    log_dir:
+        Path where TensorBoard logs were written.
+    """
+    if evaluate_fn is None:
+        evaluate_fn = evaluate_classification_model
+    if start_epoch < 0:
+        raise ValueError("start_epoch must be non-negative.")
+
+    run_root = Path(run_dir)
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    if run_name is None:
+        run_name = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    log_dir = str(run_root / run_name)
+    writer = SummaryWriter(log_dir=log_dir)
+    metric_tag = tensorboard_metric_name(primary_metric)
+
+    if profile_dir is None:
+        profile_dir = str(run_root / "profiler" / run_name)
+
+    history = make_training_history(
+        history,
+        primary_metric=primary_metric,
+        higher_is_better=higher_is_better,
+    )
+    checkpoint_path = None
+    if save_best:
+        checkpoint_root = Path(checkpoint_dir) if checkpoint_dir is not None else Path(log_dir) / "checkpoints"
+        checkpoint_path = checkpoint_root / "best.pt"
+
+    try:
         for epoch in range(epochs):
+            global_epoch = start_epoch + epoch + 1
             model.train()
             epoch_start = time.perf_counter()
             batch_fetch_start = epoch_start
@@ -669,7 +961,6 @@ def _():
                 torch.cuda.reset_peak_memory_stats(device)
 
             running_loss = torch.zeros((), device=device)
-            running_correct = torch.zeros((), device=device)
             seen_examples = 0
             step_count = 0
             profiler = None
@@ -702,8 +993,7 @@ def _():
                     data_time_total += data_ready - batch_fetch_start
                     step_start = time.perf_counter()
 
-                    # Separate the transfer and training-step regions so profiler
-                    # traces show where time is actually going.
+                    # Keep transfer and optimization separate in profiler traces.
                     with (
                         record_function("train/data_to_device")
                         if profiler is not None
@@ -717,8 +1007,8 @@ def _():
                         else contextlib.nullcontext()
                     ):
                         optimizer.zero_grad(set_to_none=True)
-                        logits = model(X_batch)
-                        loss = criterion(logits, y_batch)
+                        predictions = model(X_batch)
+                        loss = criterion(predictions, y_batch)
                         loss.backward()
                         optimizer.step()
 
@@ -730,7 +1020,6 @@ def _():
                     step_time_total += time.perf_counter() - step_start
                     batch_size = y_batch.size(0)
                     running_loss += loss.detach() * batch_size
-                    running_correct += (logits.argmax(dim=1) == y_batch).sum()
                     seen_examples += batch_size
                     step_count += 1
                     batch_fetch_start = time.perf_counter()
@@ -738,7 +1027,10 @@ def _():
                     if progress_callback is not None:
                         progress_callback(
                             increment=1,
-                            subtitle=f"Epoch {epoch + 1}/{epochs} | batch {batch_index + 1}/{train_batches_total}",
+                            subtitle=(
+                                f"Epoch {global_epoch} | "
+                                f"batch {batch_index + 1}/{train_batches_total}"
+                            ),
                         )
 
                     if verbose and log_interval is not None and (batch_index + 1) % log_interval == 0:
@@ -751,46 +1043,99 @@ def _():
                 break
 
             train_loss = (running_loss / seen_examples).item()
-            train_accuracy = (running_correct / seen_examples).item()
-            val_metrics = evaluate_model(model, val_loader, device=device, max_batches=max_eval_batches)
+            val_metrics = evaluate_fn(
+                model,
+                val_loader,
+                criterion,
+                device=device,
+                max_batches=max_eval_batches,
+            )
+            if primary_metric not in val_metrics:
+                available_metrics = ", ".join(sorted(val_metrics))
+                raise KeyError(
+                    f"evaluate_fn did not return primary_metric={primary_metric!r}. "
+                    f"Available metrics: {available_metrics}."
+                )
+
+            val_metric = float(val_metrics[primary_metric])
+            val_loss = val_metrics.get("loss")
+            val_loss = float(val_loss) if val_loss is not None else None
             epoch_time = time.perf_counter() - epoch_start
             samples_per_sec = seen_examples / step_time_total if step_time_total else 0.0
             avg_step_time_ms = 1000.0 * step_time_total / step_count if step_count else 0.0
             avg_data_time_ms = 1000.0 * data_time_total / step_count if step_count else 0.0
 
             history["train_loss"].append(train_loss)
-            history["train_accuracy"].append(train_accuracy)
-            history["val_accuracy"].append(val_metrics["accuracy"])
+            history["val_loss"].append(val_loss)
+            history["val_metric"].append(val_metric)
             history["epoch_time"].append(epoch_time)
             history["samples_per_sec"].append(samples_per_sec)
             history["avg_step_time_ms"].append(avg_step_time_ms)
             history["avg_data_time_ms"].append(avg_data_time_ms)
 
-            if val_metrics["accuracy"] > history["best_val_accuracy"]:
-                history["best_val_accuracy"] = val_metrics["accuracy"]
-                history["best_epoch"] = epoch + 1
+            # Keep the primary metric generic, but retain all scalar validation
+            # metrics by their evaluator-provided names for later analysis.
+            metric_history = history.setdefault("val_metrics", {})
+            for metric_name, metric_value in val_metrics.items():
+                if isinstance(metric_value, (int, float)):
+                    metric_history.setdefault(metric_name, []).append(float(metric_value))
 
-            writer.add_scalar("epoch/train_loss", train_loss, epoch + 1)
-            writer.add_scalar("epoch/train_accuracy", train_accuracy, epoch + 1)
-            writer.add_scalar("epoch/val_accuracy", val_metrics["accuracy"], epoch + 1)
-            writer.add_scalar("epoch/time_sec", epoch_time, epoch + 1)
-            writer.add_scalar("perf/samples_per_sec", samples_per_sec, epoch + 1)
-            writer.add_scalar("perf/avg_step_time_ms", avg_step_time_ms, epoch + 1)
-            writer.add_scalar("perf/avg_data_time_ms", avg_data_time_ms, epoch + 1)
+            previous_best = history["best_val_metric"]
+            improved = (
+                previous_best is None
+                or (higher_is_better and val_metric > previous_best)
+                or (not higher_is_better and val_metric < previous_best)
+            )
+            if improved:
+                history["best_val_metric"] = val_metric
+                history["best_epoch"] = global_epoch
+
+                if checkpoint_path is not None:
+                    checkpoint_start = time.perf_counter()
+                    saved_path = save_training_checkpoint(
+                        checkpoint_path,
+                        model=model,
+                        optimizer=optimizer,
+                        history=history,
+                        epoch=global_epoch,
+                        metadata=checkpoint_metadata,
+                    )
+                    checkpoint_time = time.perf_counter() - checkpoint_start
+                    history["checkpoint_path"] = str(saved_path)
+
+                    previous_text = "none" if previous_best is None else f"{previous_best:.4f}"
+                    checkpoint_message = (
+                        f"Saved best checkpoint at epoch {global_epoch}: "
+                        f"val_{primary_metric} improved {previous_text} -> {val_metric:.4f} "
+                        f"({checkpoint_time:.2f}s)"
+                    )
+                    print(checkpoint_message)
+                    if progress_callback is not None:
+                        progress_callback(increment=0, subtitle=checkpoint_message)
+
+            writer.add_scalar("epoch/train_loss", train_loss, global_epoch)
+            if val_loss is not None:
+                writer.add_scalar("epoch/val_loss", val_loss, global_epoch)
+            writer.add_scalar(f"epoch/val_{metric_tag}", val_metric, global_epoch)
+            writer.add_scalar("epoch/time_sec", epoch_time, global_epoch)
+            writer.add_scalar("perf/samples_per_sec", samples_per_sec, global_epoch)
+            writer.add_scalar("perf/avg_step_time_ms", avg_step_time_ms, global_epoch)
+            writer.add_scalar("perf/avg_data_time_ms", avg_data_time_ms, global_epoch)
 
             peak_allocated_mb = None
             peak_reserved_mb = None
             if device.type == "cuda":
                 peak_allocated_mb = torch.cuda.max_memory_allocated(device) / 1024**2
                 peak_reserved_mb = torch.cuda.max_memory_reserved(device) / 1024**2
-                writer.add_scalar("perf/max_cuda_mem_allocated_mb", peak_allocated_mb, epoch + 1)
-                writer.add_scalar("perf/max_cuda_mem_reserved_mb", peak_reserved_mb, epoch + 1)
+                writer.add_scalar("perf/max_cuda_mem_allocated_mb", peak_allocated_mb, global_epoch)
+                writer.add_scalar("perf/max_cuda_mem_reserved_mb", peak_reserved_mb, global_epoch)
 
             if show_epoch_summary:
+                val_loss_text = "" if val_loss is None else f" | val_loss={val_loss:.4f}"
                 print(
-                    f"Epoch {epoch + 1}/{epochs} | time={epoch_time:.2f}s | "
-                    f"train_loss={train_loss:.4f} | train_acc={train_accuracy:.4f} | "
-                    f"val_acc={val_metrics['accuracy']:.4f}"
+                    f"Epoch {global_epoch} | time={epoch_time:.2f}s | "
+                    f"train_loss={train_loss:.4f}{val_loss_text} | "
+                    f"val_{primary_metric}={val_metric:.4f}"
                 )
             if verbose:
                 print(
@@ -806,37 +1151,41 @@ def _():
                     print(f"  Profiler trace written to: {profile_dir}")
 
             if trial is not None:
-                trial.report(val_metrics["accuracy"], step=epoch)
+                trial.report(val_metric, step=global_epoch)
                 if trial.should_prune():
-                    writer.close()
                     raise optuna.TrialPruned()
 
             if progress_callback is not None:
                 progress_callback(
                     increment=0,
-                    subtitle=f"Epoch {epoch + 1}/{epochs} complete | val_acc={val_metrics['accuracy']:.4f}",
+                    subtitle=f"Epoch {global_epoch} complete | val_{primary_metric}={val_metric:.4f}",
                 )
 
             if stop_event is not None and stop_event.is_set():
                 history["stopped_early"] = True
                 break
 
-        if hparams and history["val_accuracy"]:
+        if hparams and history["val_metric"]:
+            metric_summary = {
+                f"hparam/best_val_{metric_tag}": history["best_val_metric"],
+                f"hparam/final_val_{metric_tag}": history["val_metric"][-1],
+                "hparam/best_epoch": history["best_epoch"],
+            }
+            if history["val_loss"] and history["val_loss"][-1] is not None:
+                metric_summary["hparam/final_val_loss"] = history["val_loss"][-1]
+
             writer.add_hparams(
                 {
                     key: value if isinstance(value, (bool, int, float, str)) else str(value)
                     for key, value in hparams.items()
                 },
-                {
-                    "hparam/best_val_accuracy": history["best_val_accuracy"],
-                    "hparam/final_val_accuracy": history["val_accuracy"][-1],
-                },
+                metric_summary,
+                run_name="hparams",
             )
-
+    finally:
         writer.close()
-        return history, log_dir
 
-    return DEVICE, train_model
+    return history, log_dir
 
 
 @app.cell
@@ -848,142 +1197,559 @@ def _(DEVICE, model):
     return criterion, optimizer
 
 
-@app.cell
-def _(CovTypeModel, DEVICE, build_dataloaders, criterion, train_model):
-    ## Optional: Optuna search helpers.
+@app.class_definition
+@__import__("dataclasses").dataclass(frozen=True)
+class CoverTypeSearchSpace:
+    """Small, stable hyperparameter space for the CoverType exercise.
 
-    # Optuna stores parameter choices inside the study database. The earlier version
-    # used tuples/lists directly for `hidden_dims`, which caused reload mismatches in
-    # persisted studies. We therefore encode each architecture as a stable string
-    # key and decode it inside the objective function.
-    HIDDEN_DIM_OPTIONS = {
-        "64-128": (64, 128),
-        "128-256": (128, 256),
-        "128-256-64": (128, 256, 64),
-        "256-512-128": (256, 512, 128),
+    Architecture options are keyed by strings because Optuna persists categorical
+    choices. Keeping those keys stable lets existing studies be reloaded safely.
+
+    Attributes
+    ----------
+    lr_low, lr_high:
+        Lower and upper bounds for the log-uniform learning-rate search.
+    batch_sizes:
+        Candidate mini-batch sizes sampled by Optuna.
+    hidden_dim_options:
+        Stable categorical architecture choices. Each item pairs the persisted
+        Optuna key with the hidden-layer widths used to build ``CovTypeModel``.
+    """
+
+    lr_low: float = 1e-4
+    lr_high: float = 5e-2
+    batch_sizes: tuple[int, ...] = (128, 256, 512, 1024)
+    hidden_dim_options: tuple[tuple[str, tuple[int, ...]], ...] = (
+        ("64-128", (64, 128)),
+        ("128-256", (128, 256)),
+        ("128-256-64", (128, 256, 64)),
+        ("256-512-128", (256, 512, 128)),
+    )
+
+    @property
+    def hidden_dims_by_key(self) -> dict[str, tuple[int, ...]]:
+        """Map persisted architecture keys to hidden-layer widths."""
+        return dict(self.hidden_dim_options)
+
+
+@app.class_definition
+@__import__("dataclasses").dataclass(frozen=True)
+class OptunaStudyConfig:
+    """Configuration for running an Optuna study from this notebook.
+
+    Attributes
+    ----------
+    study_name:
+        Name used by Optuna to identify the study in persistent storage.
+    direction:
+        Optuna optimization direction, usually ``"maximize"`` for accuracy and
+        ``"minimize"`` for error or loss metrics.
+    storage:
+        Optional Optuna storage URL. The default SQLite file keeps study state
+        inside ``notes/`` so notebook experiments can resume across sessions.
+    load_if_exists:
+        Reuse an existing study with the same name instead of raising an error.
+    metric_name:
+        Human-readable Optuna metric name shown in study summaries. This can be
+        more descriptive than ``primary_metric``, such as ``validation_accuracy``.
+    primary_metric:
+        Key returned by the evaluator and used by ``train_model`` for model
+        selection and Optuna reporting.
+    higher_is_better:
+        Direction used inside ``train_model`` when deciding whether a checkpoint
+        is an improvement.
+    n_trials, timeout, n_jobs:
+        Optuna search limits and parallelism settings.
+    show_progress_bar:
+        Whether Optuna should show its own progress bar during optimization.
+    gc_after_trial:
+        Ask Optuna to run garbage collection after each trial, useful in notebook
+        sessions that repeatedly construct models.
+    catch:
+        Exception types that Optuna should catch and mark as failed trials.
+    epochs:
+        Number of epochs each trial trains for.
+    run_dir:
+        TensorBoard root directory for trial logs.
+    max_train_batches, max_eval_batches:
+        Optional caps for smoke tests or intentionally small trial runs.
+    eval_batch_size, test_batch_size:
+        Optional loader batch sizes overriding the notebook defaults.
+    save_best_checkpoint:
+        Whether each trial should save its best model checkpoint.
+    checkpoint_dir:
+        Optional root directory for trial checkpoints. Each trial gets its own
+        subdirectory when checkpoint saving is enabled.
+    input_dim, output_dim:
+        CoverType model input feature count and class count.
+    optimizer_momentum:
+        Momentum value used by the SGD optimizer factory in ``run_optuna_search``.
+    sampler, pruner:
+        Optional Optuna sampler and pruner instances for custom search behavior.
+    """
+
+    study_name: str = "covertype_hpo_v2"
+    direction: str = "maximize"
+    storage: str | None = "sqlite:///notes/optuna_study.db"
+    load_if_exists: bool = True
+    metric_name: str = "validation_accuracy"
+    primary_metric: str = "accuracy"
+    higher_is_better: bool = True
+    n_trials: int = 10
+    timeout: float | None = None
+    n_jobs: int = 1
+    show_progress_bar: bool = True
+    gc_after_trial: bool = True
+    catch: tuple[type[Exception], ...] = ()
+    epochs: int = 5
+    run_dir: str = "./runs/optuna"
+    max_train_batches: int | None = None
+    max_eval_batches: int | None = None
+    eval_batch_size: int | None = None
+    test_batch_size: int | None = None
+    save_best_checkpoint: bool = False
+    checkpoint_dir: str | None = None
+    input_dim: int = 54
+    output_dim: int = 7
+    optimizer_momentum: float = 0.9
+    sampler: object | None = None
+    pruner: object | None = None
+
+
+@app.cell
+def _():
+    ## Optional: Optuna search helpers.
+    DEFAULT_STUDY_NAME = "covertype_hpo_v2"
+    COVERTYPE_SEARCH_SPACE = CoverTypeSearchSpace()
+    HIDDEN_DIM_OPTIONS = COVERTYPE_SEARCH_SPACE.hidden_dims_by_key
+    return COVERTYPE_SEARCH_SPACE, HIDDEN_DIM_OPTIONS
+
+
+@app.function
+def suggest_covertype_hparams(
+    trial,
+    search_space: CoverTypeSearchSpace = CoverTypeSearchSpace(),
+) -> dict:
+    """Sample one CoverType hyperparameter configuration for an Optuna trial.
+
+    Parameters
+    ----------
+    trial:
+        Active Optuna trial used to suggest values.
+    search_space:
+        Search-space definition containing learning-rate bounds, batch sizes,
+        and hidden-layer options.
+
+    Returns
+    -------
+    dict
+        Hyperparameters for one trial. ``hidden_dims_key`` is the persisted
+        categorical value; ``hidden_dims`` is the tuple used to build the model.
+    """
+    hidden_dims_by_key = search_space.hidden_dims_by_key
+    hidden_dims_key = trial.suggest_categorical(
+        "hidden_dims_key",
+        list(hidden_dims_by_key),
+    )
+    return {
+        "lr": trial.suggest_float(
+            "lr",
+            search_space.lr_low,
+            search_space.lr_high,
+            log=True,
+        ),
+        "batch_size": trial.suggest_categorical(
+            "batch_size",
+            list(search_space.batch_sizes),
+        ),
+        "hidden_dims_key": hidden_dims_key,
+        "hidden_dims": hidden_dims_by_key[hidden_dims_key],
     }
 
-    DEFAULT_STUDY_NAME = "covertype_hpo_v2"
+
+@app.function
+def create_optuna_study(config: OptunaStudyConfig = OptunaStudyConfig()):
+    """Create or reload an Optuna study from explicit notebook configuration.
+
+    Parameters
+    ----------
+    config:
+        Study configuration controlling storage, study name, direction, sampler,
+        pruner, and displayed metric name.
+
+    Returns
+    -------
+    optuna.Study
+        Study ready to optimize. If ``config.storage`` and
+        ``config.load_if_exists`` point at an existing study, that study is
+        reused.
+    """
+    study = optuna.create_study(
+        direction=config.direction,
+        sampler=config.sampler,
+        pruner=config.pruner,
+        storage=config.storage,
+        study_name=config.study_name,
+        load_if_exists=config.load_if_exists,
+    )
+    study.set_metric_names([config.metric_name])
+    return study
 
 
-    def make_objective(
+@app.function
+def train_pytorch_trial(
+    trial,
+    *,
+    config: OptunaStudyConfig,
+    suggest_hparams,
+    model_factory,
+    optimizer_factory,
+    dataloader_factory,
+    train_fn,
+    evaluate_fn,
+    criterion,
+    device,
+) -> float:
+    """Run one Optuna trial for a PyTorch supervised-learning model.
+
+    The factories keep the generic trial runner independent of the CoverType
+    architecture, optimizer, and data split while still keeping the call site
+    compact in the notebook.
+
+    Parameters
+    ----------
+    trial:
+        Active Optuna trial.
+    config:
+        Trial/runtime configuration, including epoch count, metric name,
+        TensorBoard directory, and optional checkpoint settings.
+    suggest_hparams:
+        Callable that receives ``trial`` and returns a parameter dictionary.
+    model_factory:
+        Callable that receives the parameter dictionary and returns a PyTorch
+        model.
+    optimizer_factory:
+        Callable that receives ``(model, params)`` and returns an optimizer.
+    dataloader_factory:
+        Callable that receives the parameter dictionary and returns
+        ``(train_loader, val_loader, test_loader)``.
+    train_fn:
+        Training function compatible with ``train_model``.
+    evaluate_fn:
+        Evaluator passed through to ``train_fn``. It must return
+        ``config.primary_metric``.
+    criterion:
+        Loss function used for training and optional validation loss reporting.
+    device:
+        Device on which the model and batches should run.
+
+    Returns
+    -------
+    float
+        Best validation metric from the trial history. Optuna interprets this
+        according to ``config.direction``.
+    """
+    params = suggest_hparams(trial)
+
+    model = model_factory(params).to(device)
+    optimizer = optimizer_factory(model, params)
+    train_loader, val_loader, _ = dataloader_factory(params)
+
+    run_name = f"trial_{trial.number:04d}"
+    log_dir = str(Path(config.run_dir) / run_name)
+    trial.set_user_attr("tensorboard_log_dir", log_dir)
+    trial.set_user_attr("hidden_dims", list(params.get("hidden_dims", ())))
+
+    checkpoint_dir = None
+    if config.save_best_checkpoint and config.checkpoint_dir is not None:
+        checkpoint_dir = str(Path(config.checkpoint_dir) / run_name)
+
+    serializable_params = {
+        key: value if isinstance(value, (bool, int, float, str)) else str(value)
+        for key, value in params.items()
+    }
+    history, actual_log_dir = train_fn(
+        model,
+        optimizer,
+        criterion,
+        train_loader,
+        val_loader,
+        epochs=config.epochs,
+        device=device,
+        evaluate_fn=evaluate_fn,
+        primary_metric=config.primary_metric,
+        higher_is_better=config.higher_is_better,
+        run_dir=config.run_dir,
+        run_name=run_name,
+        show_epoch_summary=False,
+        verbose=False,
+        trial=trial,
+        hparams=serializable_params,
+        max_train_batches=config.max_train_batches,
+        max_eval_batches=config.max_eval_batches,
+        save_best=config.save_best_checkpoint,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_metadata={
+            "study_name": config.study_name,
+            "trial_number": trial.number,
+            "params": serializable_params,
+        },
+    )
+
+    best_metric = float(history["best_val_metric"])
+    trial.set_user_attr("tensorboard_log_dir", actual_log_dir)
+    trial.set_user_attr("best_epoch", history["best_epoch"])
+    trial.set_user_attr(f"best_val_{config.primary_metric}", best_metric)
+    if history.get("checkpoint_path") is not None:
+        trial.set_user_attr("checkpoint_path", history["checkpoint_path"])
+    return best_metric
+
+
+@app.function
+def optimize_study(
+    study,
+    objective,
+    config: OptunaStudyConfig,
+    *,
+    callbacks: tuple = (),
+    stop_event=None,
+):
+    """Run ``study.optimize`` with explicit notebook defaults and cancellation.
+
+    Parameters
+    ----------
+    study:
+        Optuna study to optimize.
+    objective:
+        Callable that receives an Optuna trial and returns the metric to optimize.
+    config:
+        Study configuration supplying trial count, timeout, parallelism,
+        callbacks behavior, and progress-bar settings.
+    callbacks:
+        Optional Optuna callbacks to run after each trial.
+    stop_event:
+        Optional ``threading.Event``. If set, a callback asks Optuna to stop after
+        the current trial finishes.
+
+    Returns
+    -------
+    optuna.Study
+        The same study after optimization, returned for convenient notebook use.
+    """
+    optimize_callbacks = list(callbacks)
+    if stop_event is not None:
+        def stop_after_current_trial(running_study, frozen_trial) -> None:
+            if stop_event.is_set():
+                running_study.stop()
+
+        optimize_callbacks.append(stop_after_current_trial)
+
+    study.optimize(
+        objective,
+        n_trials=config.n_trials,
+        timeout=config.timeout,
+        n_jobs=config.n_jobs,
+        catch=config.catch,
+        callbacks=optimize_callbacks or None,
+        gc_after_trial=config.gc_after_trial,
+        show_progress_bar=config.show_progress_bar,
+    )
+    return study
+
+
+@app.cell
+def _(COVERTYPE_SEARCH_SPACE, DEVICE, build_dataloaders, criterion):
+    def run_optuna_search(
+        config: OptunaStudyConfig = OptunaStudyConfig(),
+        search_space: CoverTypeSearchSpace = COVERTYPE_SEARCH_SPACE,
         *,
-        epochs: int = 5,
-        max_train_batches: int | None = None,
-        max_eval_batches: int | None = None,
+        callbacks: tuple = (),
+        stop_event=None,
     ):
-        """Create an Optuna objective bound to the current notebook helpers.
+        """Run the CoverType HPO search using the generic PyTorch trial runner.
 
-        The returned `objective(trial)` closure matches Optuna's required API while
-        still letting the notebook pass through fixed configuration such as epoch
-        count or smoke-test batch caps.
+        Parameters
+        ----------
+        config:
+            Optuna/training configuration for this notebook search.
+        search_space:
+            CoverType hyperparameter search space. Passing this explicitly makes it
+            easy to run a smaller or wider search without editing the helper.
+        callbacks:
+            Optional Optuna callbacks forwarded to ``optimize_study``.
+        stop_event:
+            Optional cancellation event used by the notebook UI to stop after the
+            current trial.
+
+        Returns
+        -------
+        optuna.Study
+            Optimized study containing trial results and user attributes such as
+            TensorBoard log paths and best epochs.
         """
+        study = create_optuna_study(config)
 
-        def objective(trial):
-            lr = trial.suggest_float("lr", 1e-4, 5e-2, log=True)
-            batch_size = trial.suggest_categorical("batch_size", [128, 256, 512, 1024])
-            hidden_dims_key = trial.suggest_categorical("hidden_dims_key", list(HIDDEN_DIM_OPTIONS.keys()))
-            hidden_dims = HIDDEN_DIM_OPTIONS[hidden_dims_key]
-
-            trial_model = CovTypeModel(input_dim=54, hidden_dims=hidden_dims, output_dim=7).to(DEVICE)
-            trial_optimizer = optim.SGD(trial_model.parameters(), lr=lr, momentum=0.9)
-            trial_train_loader, trial_val_loader, _ = build_dataloaders(batch_size=batch_size)
-
-            history, log_dir = train_model(
-                trial_model,
-                trial_optimizer,
-                criterion,
-                trial_train_loader,
-                trial_val_loader,
-                epochs=epochs,
-                device=DEVICE,
-                run_dir="./runs/optuna",
-                run_name=f"trial_{trial.number:04d}",
-                show_epoch_summary=False,
-                verbose=False,
-                trial=trial,
-                hparams={
-                    "lr": lr,
-                    "batch_size": batch_size,
-                    "hidden_dims_key": hidden_dims_key,
-                    "hidden_dims": hidden_dims,
-                },
-                max_train_batches=max_train_batches,
-                max_eval_batches=max_eval_batches,
+        def build_trial_model(params: dict):
+            return CovTypeModel(
+                input_dim=config.input_dim,
+                hidden_dims=params["hidden_dims"],
+                output_dim=config.output_dim,
             )
 
-            trial.set_user_attr("tensorboard_log_dir", log_dir)
-            trial.set_user_attr("hidden_dims", list(hidden_dims))
-            trial.set_user_attr("best_epoch", history["best_epoch"])
-            return history["best_val_accuracy"]
+        def build_trial_optimizer(model, params: dict):
+            return optim.SGD(
+                model.parameters(),
+                lr=params["lr"],
+                momentum=config.optimizer_momentum,
+            )
 
-        return objective
+        def build_trial_dataloaders(params: dict):
+            return build_dataloaders(
+                train_batch_size=params["batch_size"],
+                eval_batch_size=config.eval_batch_size,
+                test_batch_size=config.test_batch_size,
+            )
 
+        def objective(trial) -> float:
+            return train_pytorch_trial(
+                trial,
+                config=config,
+                suggest_hparams=lambda active_trial: suggest_covertype_hparams(
+                    active_trial,
+                    search_space,
+                ),
+                model_factory=build_trial_model,
+                optimizer_factory=build_trial_optimizer,
+                dataloader_factory=build_trial_dataloaders,
+                train_fn=train_model,
+                evaluate_fn=evaluate_classification_model,
+                criterion=criterion,
+                device=DEVICE,
+            )
 
-    def create_optuna_study(
-        *,
-        study_name: str = DEFAULT_STUDY_NAME,
-        storage: str = "sqlite:///optuna_study.db",
-    ):
-        """Create or reload the CoverType Optuna study.
-
-        Notes
-        -----
-        The study is persisted under a new default name because Optuna stores the
-        search-space schema. Older studies used an incompatible architecture
-        encoding, which is what caused the earlier categorical `ValueError`.
-        """
-        sampler = optuna.samplers.TPESampler(seed=42)
-        pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1)
-        return optuna.create_study(
-            direction="maximize",
-            sampler=sampler,
-            pruner=pruner,
-            storage=storage,
-            study_name=study_name,
-            load_if_exists=True,
+        return optimize_study(
+            study,
+            objective,
+            config,
+            callbacks=callbacks,
+            stop_event=stop_event,
         )
 
 
-    def run_optuna_search(
-        *,
-        n_trials: int = 10,
-        epochs: int = 5,
-        study_name: str = DEFAULT_STUDY_NAME,
-        max_train_batches: int | None = None,
-        max_eval_batches: int | None = None,
-    ):
-        """Run the Optuna search and return the completed study.
-
-        The search is intentionally triggered manually rather than reactively. That
-        keeps notebook edits from accidentally launching a long study.
-        """
-        study = create_optuna_study(study_name=study_name)
-        study.optimize(
-            make_objective(
-                epochs=epochs,
-                max_train_batches=max_train_batches,
-                max_eval_batches=max_eval_batches,
-            ),
-            n_trials=n_trials,
-            show_progress_bar=True,
-        )
-        return study
+    return (run_optuna_search,)
 
 
+@app.cell
+def _():
     print(
-        "Optuna helpers ready. Example: "
-        "run_optuna_search(n_trials=1, epochs=1, max_train_batches=5, max_eval_batches=5, study_name='covertype_hpo_smoke')"
+        "Optuna helpers ready. The smoke-test cell below starts a classification study "
+        "with metric-agnostic training history."
     )
     return
 
 
-@app.cell(column=3)
+@app.cell(hide_code=True)
 def _():
-    # Optuna is manual on purpose.
-    #
-    # Example:
-    # run_optuna_search(n_trials=10, epochs=5)
+    optuna_stop_requested = Event()
+    optuna_result = {}
+
+    mo.md(
+        "Shared Optuna state: `optuna_stop_requested` asks the study to stop "
+        "after the current trial and `optuna_result` stores the latest study."
+    )
+    return optuna_result, optuna_stop_requested
+
+
+@app.cell(column=3, hide_code=True)
+def _(optuna_stop_requested):
+    stop_smoke_optuna = mo.ui.button(
+        label="Stop after current trial",
+        kind="warn",
+        on_change=lambda _: optuna_stop_requested.set(),
+    )
+
+    mo.vstack(
+        [
+            mo.md(
+                "**Optuna smoke test.** The study runs in a background thread. "
+                "Use the stop button to finish the active trial and then stop the study."
+            ),
+            stop_smoke_optuna,
+        ]
+    )
+    return
+
+
+@app.cell
+def _(optuna_result, optuna_stop_requested, run_optuna_search):
+
+    smoke_config = OptunaStudyConfig(
+        study_name="ch10_smoke",
+        storage="sqlite:///notes/optuna_smoke.db",
+        n_trials=4,
+        epochs=1,
+        run_dir="./runs/optuna_smoke",
+        max_train_batches=3,
+        max_eval_batches=2,
+        show_progress_bar=False,
+        gc_after_trial=True,
+        pruner=optuna.pruners.NopPruner(),
+    )
+
+    def optuna_smoke_loop():
+        with mo.status.progress_bar(
+            total=smoke_config.n_trials,
+            title="Optuna smoke test",
+            subtitle="Preparing study",
+        ) as pbar:
+            def update_progress(study, trial):
+                if trial.value is None:
+                    value_text = trial.state.name.lower()
+                else:
+                    value_text = f"value={trial.value:.4f}"
+
+                try:
+                    best_text = f" | best={study.best_value:.4f}"
+                except ValueError:
+                    best_text = ""
+
+                pbar.update(
+                    increment=1,
+                    subtitle=f"Trial {trial.number} finished: {value_text}{best_text}",
+                )
+
+            smoke_study = run_optuna_search(
+                config=smoke_config,
+                callbacks=(update_progress,),
+                stop_event=optuna_stop_requested,
+            )
+
+        if optuna_stop_requested.is_set():
+            print("Optuna study stopped after the current trial by request.")
+        else:
+            print("Optuna smoke test completed the requested trials.")
+        print(f"Total trials: {len(smoke_study.trials)}")
+        print(f"Best value: {smoke_study.best_value:.4f}")
+        print(f"Best params: {smoke_study.best_params}")
+
+        optuna_result["config"] = smoke_config
+        optuna_result["study"] = smoke_study
+        optuna_result["trials"] = smoke_study.trials_dataframe(
+            attrs=("number", "value", "state", "params", "user_attrs"),
+        )
+
+    optuna_stop_requested.clear()
+    optuna_result.clear()
+    mo.Thread(target=optuna_smoke_loop).start()
+    mo.md(
+        "Optuna smoke test started in the background. Use the stop button to stop after the current trial."
+    )
+    return
+
+
+@app.cell
+def _(optuna_result):
+    optuna_result
     return
 
 
@@ -1000,42 +1766,75 @@ def _():
 
 
 @app.cell
+def _(DEVICE, HIDDEN_DIM_OPTIONS, build_dataloaders):
+    # Best parameters found in optuna trials
+    BEST_PARAMS = {
+        "lr": 0.004108791545324082,
+        "batch_size": 128,
+        "hidden_dims_key": "256-512-128",
+    }
+    BEST_TRAIN_RUN_NAME = "best_params_sgd"
+
+    # Initialise models and variables
+    best_mod = CovTypeModel(
+        input_dim=54,
+        hidden_dims=HIDDEN_DIM_OPTIONS[BEST_PARAMS["hidden_dims_key"]],
+        output_dim=7,
+    ).to(DEVICE)
+
+    # Optimiser
+    best_optim = optim.SGD(best_mod.parameters(), momentum=0.9, lr=BEST_PARAMS["lr"])
+
+    # Data loaders. Validation uses the larger default evaluation batch size.
+    best_train_loader, best_val_loader, best_test_loader = build_dataloaders(
+        train_batch_size=BEST_PARAMS["batch_size"]
+    )
+    return (
+        BEST_TRAIN_RUN_NAME,
+        best_mod,
+        best_optim,
+        best_train_loader,
+        best_val_loader,
+    )
+
+
+@app.cell
 def _(
+    BEST_TRAIN_RUN_NAME,
     DEVICE,
+    best_mod,
+    best_optim,
+    best_train_loader,
+    best_val_loader,
     cancelled,
     criterion,
-    model,
-    optimizer,
-    train_loader,
-    train_model,
     training_result,
-    val_loader,
 ):
-    # Best parameters found in the
-    BEST_PARAMS = {
-        "lr": 0.0010253509690168502,
-        "batch_size": 128,
-        "hidden_dims_key": "128-256-64",
-    }
-
-
-    epochs = 4
+    # Decide how many additional epochs to train the model for
+    epochs = 30
 
     def training_loop():
+        run_name = training_result.setdefault("run_name", BEST_TRAIN_RUN_NAME)
+        existing_history = training_result.get("history")
+        start_epoch = len(existing_history["train_loss"]) if existing_history is not None else 0
+
         with mo.status.progress_bar(
-            total=epochs * len(train_loader),
-            # title="Manual training",
-            # subtitle="Preparing training loop",
+            total=epochs * len(best_train_loader),
+            title="Manual training",
+            subtitle="Preparing training loop",
         ) as pbar:
             history, log_dir = train_model(
-                model,
-                optimizer,
+                best_mod,
+                best_optim,
                 criterion,
-                train_loader,
-                val_loader,
+                best_train_loader,
+                best_val_loader,
                 epochs=epochs,
                 device=DEVICE,
-                run_dir="./runs/test_3",
+                run_dir="./runs/mcp_train_0906",
+                run_name=run_name,
+                start_epoch=start_epoch,
+                history=existing_history,
                 verbose=True,
                 stop_event=cancelled,
                 progress_callback=lambda **kwargs: pbar.update(**kwargs),
@@ -1049,10 +1848,10 @@ def _(
 
         training_result["history"] = history
         training_result["log_dir"] = log_dir
+        training_result["run_name"] = run_name
 
 
     cancelled.clear()
-    training_result.clear()
     mo.Thread(target=training_loop).start()
     mo.md(
         "Training started in the background. Use the stop button in the cell above to stop after the current epoch."

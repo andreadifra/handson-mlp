@@ -125,6 +125,15 @@ Code should aim for good engineering hygiene even when the notebook is explorato
 - Add type hints for non-trivial helper functions, classes, and important data
   structures.
 - Add docstrings to helpers whose purpose or inputs are not obvious.
+- Preserve existing documentation. Do not remove or materially shorten docstrings,
+  comments, markdown explanations, or parameter/return documentation unless the
+  user explicitly asks for that cleanup.
+- When changing a function or class with parameter-specific documentation, update
+  that documentation to match the new signature instead of replacing it with a
+  high-level summary. New parameters should get parameter-level explanations.
+- Before finishing a refactor, review the diff for accidental documentation loss,
+  especially `Parameters`, `Returns`, shape notes, device assumptions, and
+  notebook teaching notes.
 - Use short comments to explain reasoning, assumptions, tensor shapes, or tricky
   implementation details.
 - Do not add filler comments that merely restate the code.
