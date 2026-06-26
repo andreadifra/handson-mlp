@@ -8,6 +8,7 @@ with app.setup:
     import marimo as mo
     import optuna
     import time
+    import json
 
     from dataclasses import dataclass
     from datetime import datetime
@@ -569,12 +570,13 @@ def evaluate_classification_model(
     *,
     device: torch.device,
     max_batches: int | None = None,
-) -> dict[str, float]:
+) -> dict[str, object]:
     """Evaluate a classification model on a data loader.
 
-    This is the default evaluator for the CoverType exercise. It follows the
-    small protocol expected by ``train_model``: return a dictionary containing
-    the primary metric key, an example count, and optionally loss.
+    This is the default evaluator for the CoverType exercise. It owns the metric
+    contract used by ``train_model``: it names the primary metric, reports the
+    primary value, declares whether higher values are better, and includes all
+    scalar validation metrics in ``metrics``.
 
     Parameters
     ----------
@@ -594,9 +596,10 @@ def evaluate_classification_model(
 
     Returns
     -------
-    dict[str, float]
-        Metrics with ``accuracy`` as the primary classification metric,
-        ``examples`` as the evaluated row count, and optionally ``loss``.
+    dict[str, object]
+        Evaluation result with ``primary_metric="accuracy"``, ``primary_value``
+        set to validation accuracy, ``higher_is_better=True``, and a ``metrics``
+        dictionary containing ``accuracy``, ``examples``, and optionally ``loss``.
     """
     model.eval()
     total_correct = torch.zeros((), device=device)
@@ -620,28 +623,29 @@ def evaluate_classification_model(
     if total_examples == 0:
         raise ValueError("Cannot evaluate an empty data loader or zero selected batches.")
 
+    accuracy = (total_correct / total_examples).item()
     metrics = {
-        "accuracy": (total_correct / total_examples).item(),
+        "accuracy": accuracy,
         "examples": float(total_examples),
     }
     if total_loss is not None:
         metrics["loss"] = (total_loss / total_examples).item()
-    return metrics
+
+    return {
+        "primary_metric": "accuracy",
+        "primary_value": accuracy,
+        "higher_is_better": True,
+        "metrics": metrics,
+    }
 
 
 @app.function
-def make_training_history(
-    history: dict | None = None,
-    *,
-    primary_metric: str,
-    higher_is_better: bool,
-) -> dict:
+def make_training_history(history: dict | None = None) -> dict:
     """Return a metric-agnostic history dictionary for ``train_model``.
 
-    The history stores generic names such as ``val_metric`` and
-    ``best_val_metric``; the actual meaning is recorded separately in
-    ``primary_metric``. That keeps the training loop reusable for classification
-    metrics like accuracy and regression metrics like RMSE or MAE.
+    The evaluator, not ``train_model``, chooses the primary validation metric and
+    its direction. History records those choices after the first validation pass
+    so a continued run can verify that the evaluator contract has not changed.
 
     Parameters
     ----------
@@ -649,14 +653,6 @@ def make_training_history(
         Existing history to continue, usually from an earlier call to
         ``train_model`` in the same notebook session. Older accuracy-specific
         histories are migrated when possible.
-    primary_metric:
-        Name of the validation metric used for model selection, such as
-        ``"accuracy"``, ``"rmse"``, or ``"mae"``. This must match a key returned
-        by the evaluator used in ``train_model``.
-    higher_is_better:
-        Whether larger values of ``primary_metric`` represent improvement.
-        Use ``True`` for metrics such as accuracy and ``False`` for metrics such
-        as loss or RMSE.
 
     Returns
     -------
@@ -675,51 +671,27 @@ def make_training_history(
         "avg_data_time_ms": [],
         "best_val_metric": None,
         "best_epoch": 0,
-        "primary_metric": primary_metric,
-        "higher_is_better": higher_is_better,
+        "primary_metric": None,
+        "higher_is_better": None,
         "stopped_early": False,
         "checkpoint_path": None,
     }
     if history is None:
         return default_history
 
-    existing_metric = history.get("primary_metric")
-    if existing_metric is not None and existing_metric != primary_metric:
-        raise ValueError(
-            "Cannot continue a history tracked with "
-            f"primary_metric={existing_metric!r} using {primary_metric!r}."
-        )
-
-    existing_direction = history.get("higher_is_better")
-    if existing_direction is not None and existing_direction != higher_is_better:
-        raise ValueError("Cannot continue a history with a different metric direction.")
-
     # Migrate older accuracy-specific histories so long-running notebook state can
     # continue with the generic metric names.
-    if "val_metric" not in history:
-        legacy_key = f"val_{primary_metric}"
-        if legacy_key in history:
-            history["val_metric"] = list(history[legacy_key])
-        elif primary_metric == "accuracy" and "val_accuracy" in history:
-            history["val_metric"] = list(history["val_accuracy"])
+    if "val_metric" not in history and "val_accuracy" in history:
+        history["val_metric"] = list(history["val_accuracy"])
+        history.setdefault("primary_metric", "accuracy")
+        history.setdefault("higher_is_better", True)
 
-    if "best_val_metric" not in history and primary_metric == "accuracy":
+    if "best_val_metric" not in history and "best_val_accuracy" in history:
         history["best_val_metric"] = history.get("best_val_accuracy")
 
     for key, value in default_history.items():
         history.setdefault(key, value)
 
-    if history["best_val_metric"] is None and history["val_metric"]:
-        best_epoch, best_metric = (
-            max(enumerate(history["val_metric"], start=1), key=lambda item: item[1])
-            if higher_is_better
-            else min(enumerate(history["val_metric"], start=1), key=lambda item: item[1])
-        )
-        history["best_epoch"] = best_epoch
-        history["best_val_metric"] = best_metric
-
-    history["primary_metric"] = primary_metric
-    history["higher_is_better"] = higher_is_better
     history["stopped_early"] = False
     return history
 
@@ -736,8 +708,8 @@ def save_training_checkpoint(
 ):
     """Save the state needed to resume a model trained by ``train_model``.
 
-    The checkpoint stores the generic best validation metric plus the metric
-    name/direction so the file remains meaningful for classification and
+    The checkpoint stores the generic best validation metric plus the evaluator's
+    metric name/direction so the file remains meaningful for classification and
     regression runs.
 
     Parameters
@@ -752,7 +724,8 @@ def save_training_checkpoint(
         with the same momentum/adaptive state.
     history:
         Training history returned by ``train_model``. The checkpoint records this
-        verbatim, including ``best_val_metric`` and ``primary_metric``.
+        verbatim, including ``best_val_metric`` and the evaluator-selected
+        ``primary_metric``.
     epoch:
         One-based epoch number corresponding to the saved model state.
     metadata:
@@ -783,23 +756,6 @@ def save_training_checkpoint(
 
 
 @app.function
-def tensorboard_metric_name(metric_name: str) -> str:
-    """Return a TensorBoard-safe tag suffix for a metric name.
-
-    Parameters
-    ----------
-    metric_name:
-        Human-readable metric name, such as ``"accuracy"`` or ``"root mean / sq"``.
-
-    Returns
-    -------
-    str
-        Lowercase tag fragment with spaces and slashes replaced by underscores.
-    """
-    return metric_name.strip().lower().replace(" ", "_").replace("/", "_")
-
-
-@app.function
 def train_model(
     model,
     optimizer,
@@ -809,9 +765,7 @@ def train_model(
     *,
     epochs: int = 10,
     device: torch.device,
-    evaluate_fn=None,
-    primary_metric: str = "accuracy",
-    higher_is_better: bool = True,
+    evaluate_fn,
     run_dir: str = "./runs",
     run_name: str | None = None,
     start_epoch: int = 0,
@@ -833,10 +787,11 @@ def train_model(
 ):
     """Train a PyTorch model and return metric-agnostic run history.
 
-    ``train_model`` owns the mechanics that are common across supervised tasks:
-    gradient updates, validation, TensorBoard logging, optional profiling,
+    ``train_model`` owns mechanics common across supervised tasks: gradient
+    updates, validation calls, TensorBoard logging, optional profiling, Optuna
     pruning, cancellation, and best-checkpoint saving. Task-specific validation
-    is delegated to ``evaluate_fn``.
+    is delegated to ``evaluate_fn``, which owns the primary metric name and
+    comparison direction.
 
     Parameters
     ----------
@@ -858,16 +813,11 @@ def train_model(
     evaluate_fn:
         Validation function with the signature
         ``evaluate_fn(model, val_loader, criterion, device=device, max_batches=...)``.
-        It must return a dictionary containing ``primary_metric`` and may also
-        return ``loss`` plus any other scalar metrics to store in history.
-        When omitted, ``evaluate_classification_model`` is used.
-    primary_metric:
-        Key in the evaluator output used for checkpointing, Optuna reporting,
-        progress text, and TensorBoard metric names. Examples: ``"accuracy"``,
-        ``"rmse"``, or ``"mae"``.
-    higher_is_better:
-        Direction for ``primary_metric``. Use ``True`` for accuracy-like metrics
-        and ``False`` for loss/error metrics.
+        It must return a dictionary with ``primary_metric`` (name),
+        ``primary_value`` (float-like), ``higher_is_better`` (bool), and
+        ``metrics`` (a dictionary of scalar validation metrics). This explicit
+        evaluator keeps classification and regression choices out of the generic
+        training loop.
     run_dir, run_name:
         TensorBoard output location. Reusing the same ``run_name`` appends event
         files to the same TensorBoard run.
@@ -875,14 +825,14 @@ def train_model(
         Epoch offset used for TensorBoard global steps and printed epoch numbers
         when continuing a live run.
     history:
-        Existing history to append to when continuing a run. Its metric name and
-        direction must match ``primary_metric`` and ``higher_is_better``.
+        Existing history to append to when continuing a run. Its stored primary
+        metric name and direction must match the current evaluator result.
     checkpoint_dir:
         Directory for the best-model checkpoint. If omitted and ``save_best`` is
         true, checkpoints are written under ``log_dir/checkpoints``.
     save_best:
-        Save ``best.pt`` whenever ``primary_metric`` improves. No checkpoint is
-        written unless this is true.
+        Save ``best.pt`` whenever the evaluator's primary metric improves. No
+        checkpoint is written unless this is true.
     checkpoint_metadata:
         Optional metadata stored inside each checkpoint, for example Optuna study
         name, trial number, or hyperparameters.
@@ -920,8 +870,6 @@ def train_model(
     log_dir:
         Path where TensorBoard logs were written.
     """
-    if evaluate_fn is None:
-        evaluate_fn = evaluate_classification_model
     if start_epoch < 0:
         raise ValueError("start_epoch must be non-negative.")
 
@@ -933,16 +881,11 @@ def train_model(
 
     log_dir = str(run_root / run_name)
     writer = SummaryWriter(log_dir=log_dir)
-    metric_tag = tensorboard_metric_name(primary_metric)
 
     if profile_dir is None:
         profile_dir = str(run_root / "profiler" / run_name)
 
-    history = make_training_history(
-        history,
-        primary_metric=primary_metric,
-        higher_is_better=higher_is_better,
-    )
+    history = make_training_history(history)
     checkpoint_path = None
     if save_best:
         checkpoint_root = Path(checkpoint_dir) if checkpoint_dir is not None else Path(log_dir) / "checkpoints"
@@ -1043,23 +986,69 @@ def train_model(
                 break
 
             train_loss = (running_loss / seen_examples).item()
-            val_metrics = evaluate_fn(
+            evaluation = evaluate_fn(
                 model,
                 val_loader,
                 criterion,
                 device=device,
                 max_batches=max_eval_batches,
             )
-            if primary_metric not in val_metrics:
-                available_metrics = ", ".join(sorted(val_metrics))
-                raise KeyError(
-                    f"evaluate_fn did not return primary_metric={primary_metric!r}. "
-                    f"Available metrics: {available_metrics}."
+            if not isinstance(evaluation, dict):
+                raise TypeError("evaluate_fn must return a dictionary.")
+
+            missing_keys = {
+                "primary_metric",
+                "primary_value",
+                "higher_is_better",
+                "metrics",
+            } - set(evaluation)
+            if missing_keys:
+                missing_text = ", ".join(sorted(missing_keys))
+                raise KeyError(f"evaluate_fn result is missing required keys: {missing_text}.")
+
+            primary_metric = str(evaluation["primary_metric"])
+            if not primary_metric:
+                raise ValueError("evaluate_fn returned an empty primary_metric name.")
+            val_metric = float(evaluation["primary_value"])
+            higher_is_better = evaluation["higher_is_better"]
+            if not isinstance(higher_is_better, bool):
+                raise TypeError("evaluate_fn result key 'higher_is_better' must be a bool.")
+
+            val_metrics = evaluation["metrics"]
+            if not isinstance(val_metrics, dict):
+                raise TypeError("evaluate_fn result key 'metrics' must be a dictionary.")
+            val_metrics = dict(val_metrics)
+            val_metrics[primary_metric] = val_metric
+            if "loss" in evaluation and "loss" not in val_metrics:
+                val_metrics["loss"] = evaluation["loss"]
+
+            existing_metric = history.get("primary_metric")
+            if existing_metric is None:
+                history["primary_metric"] = primary_metric
+            elif existing_metric != primary_metric:
+                raise ValueError(
+                    "Cannot continue a history tracked with "
+                    f"primary_metric={existing_metric!r} using evaluator metric {primary_metric!r}."
                 )
 
-            val_metric = float(val_metrics[primary_metric])
+            existing_direction = history.get("higher_is_better")
+            if existing_direction is None:
+                history["higher_is_better"] = higher_is_better
+            elif existing_direction != higher_is_better:
+                raise ValueError("Cannot continue a history with a different metric direction.")
+
+            if history["best_val_metric"] is None and history["val_metric"]:
+                best_epoch, best_metric = (
+                    max(enumerate(history["val_metric"], start=1), key=lambda item: item[1])
+                    if higher_is_better
+                    else min(enumerate(history["val_metric"], start=1), key=lambda item: item[1])
+                )
+                history["best_epoch"] = best_epoch
+                history["best_val_metric"] = best_metric
+
             val_loss = val_metrics.get("loss")
             val_loss = float(val_loss) if val_loss is not None else None
+            metric_tag = primary_metric.strip().lower().replace(" ", "_").replace("/", "_")
             epoch_time = time.perf_counter() - epoch_start
             samples_per_sec = seen_examples / step_time_total if step_time_total else 0.0
             avg_step_time_ms = 1000.0 * step_time_total / step_count if step_count else 0.0
@@ -1166,6 +1155,8 @@ def train_model(
                 break
 
         if hparams and history["val_metric"]:
+            primary_metric = history["primary_metric"]
+            metric_tag = primary_metric.strip().lower().replace(" ", "_").replace("/", "_")
             metric_summary = {
                 f"hparam/best_val_{metric_tag}": history["best_val_metric"],
                 f"hparam/final_val_{metric_tag}": history["val_metric"][-1],
@@ -1242,8 +1233,9 @@ class OptunaStudyConfig:
     study_name:
         Name used by Optuna to identify the study in persistent storage.
     direction:
-        Optuna optimization direction, usually ``"maximize"`` for accuracy and
-        ``"minimize"`` for error or loss metrics.
+        Optuna optimization direction. This must agree with the evaluator used by
+        the trial: ``"maximize"`` when the evaluator reports
+        ``higher_is_better=True`` and ``"minimize"`` otherwise.
     storage:
         Optional Optuna storage URL. The default SQLite file keeps study state
         inside ``notes/`` so notebook experiments can resume across sessions.
@@ -1251,13 +1243,8 @@ class OptunaStudyConfig:
         Reuse an existing study with the same name instead of raising an error.
     metric_name:
         Human-readable Optuna metric name shown in study summaries. This can be
-        more descriptive than ``primary_metric``, such as ``validation_accuracy``.
-    primary_metric:
-        Key returned by the evaluator and used by ``train_model`` for model
-        selection and Optuna reporting.
-    higher_is_better:
-        Direction used inside ``train_model`` when deciding whether a checkpoint
-        is an improvement.
+        more descriptive than the evaluator's primary metric, such as
+        ``validation_accuracy``.
     n_trials, timeout, n_jobs:
         Optuna search limits and parallelism settings.
     show_progress_bar:
@@ -1293,8 +1280,6 @@ class OptunaStudyConfig:
     storage: str | None = "sqlite:///notes/optuna_study.db"
     load_if_exists: bool = True
     metric_name: str = "validation_accuracy"
-    primary_metric: str = "accuracy"
-    higher_is_better: bool = True
     n_trials: int = 10
     timeout: float | None = None
     n_jobs: int = 1
@@ -1421,8 +1406,8 @@ def train_pytorch_trial(
     trial:
         Active Optuna trial.
     config:
-        Trial/runtime configuration, including epoch count, metric name,
-        TensorBoard directory, and optional checkpoint settings.
+        Trial/runtime configuration, including epoch count, TensorBoard directory,
+        Optuna direction, and optional checkpoint settings.
     suggest_hparams:
         Callable that receives ``trial`` and returns a parameter dictionary.
     model_factory:
@@ -1436,8 +1421,8 @@ def train_pytorch_trial(
     train_fn:
         Training function compatible with ``train_model``.
     evaluate_fn:
-        Evaluator passed through to ``train_fn``. It must return
-        ``config.primary_metric``.
+        Evaluator passed through to ``train_fn``. It owns the primary metric name,
+        value, and direction used by checkpointing and Optuna reporting.
     criterion:
         Loss function used for training and optional validation loss reporting.
     device:
@@ -1477,8 +1462,6 @@ def train_pytorch_trial(
         epochs=config.epochs,
         device=device,
         evaluate_fn=evaluate_fn,
-        primary_metric=config.primary_metric,
-        higher_is_better=config.higher_is_better,
         run_dir=config.run_dir,
         run_name=run_name,
         show_epoch_summary=False,
@@ -1496,10 +1479,18 @@ def train_pytorch_trial(
         },
     )
 
+    expected_direction = "maximize" if history["higher_is_better"] else "minimize"
+    if config.direction != expected_direction:
+        raise ValueError(
+            "OptunaStudyConfig.direction must match the evaluator direction: "
+            f"config.direction={config.direction!r}, evaluator expects {expected_direction!r}."
+        )
+
     best_metric = float(history["best_val_metric"])
+    primary_metric = history["primary_metric"]
     trial.set_user_attr("tensorboard_log_dir", actual_log_dir)
     trial.set_user_attr("best_epoch", history["best_epoch"])
-    trial.set_user_attr(f"best_val_{config.primary_metric}", best_metric)
+    trial.set_user_attr(f"best_val_{primary_metric}", best_metric)
     if history.get("checkpoint_path") is not None:
         trial.set_user_attr("checkpoint_path", history["checkpoint_path"])
     return best_metric
@@ -1571,7 +1562,8 @@ def _(COVERTYPE_SEARCH_SPACE, DEVICE, build_dataloaders, criterion):
         Parameters
         ----------
         config:
-            Optuna/training configuration for this notebook search.
+            Optuna/training configuration for this notebook search. Its ``direction``
+            must match the evaluator used below.
         search_space:
             CoverType hyperparameter search space. Passing this explicitly makes it
             easy to run a smaller or wider search without editing the helper.
@@ -1637,15 +1629,6 @@ def _(COVERTYPE_SEARCH_SPACE, DEVICE, build_dataloaders, criterion):
 
 
     return (run_optuna_search,)
-
-
-@app.cell
-def _():
-    print(
-        "Optuna helpers ready. The smoke-test cell below starts a classification study "
-        "with metric-agnostic training history."
-    )
-    return
 
 
 @app.cell(hide_code=True)
@@ -1811,7 +1794,7 @@ def _(
     training_result,
 ):
     # Decide how many additional epochs to train the model for
-    epochs = 30
+    epochs = 2
 
     def training_loop():
         run_name = training_result.setdefault("run_name", BEST_TRAIN_RUN_NAME)
@@ -1831,11 +1814,13 @@ def _(
                 best_val_loader,
                 epochs=epochs,
                 device=DEVICE,
-                run_dir="./runs/mcp_train_0906",
+                evaluate_fn=evaluate_classification_model,
+                run_dir="./runs/mcp_train_2506",
                 run_name=run_name,
                 start_epoch=start_epoch,
+                save_best=True,
                 history=existing_history,
-                verbose=True,
+                verbose=False,
                 stop_event=cancelled,
                 progress_callback=lambda **kwargs: pbar.update(**kwargs),
             )
@@ -1859,7 +1844,7 @@ def _(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(cancelled):
     cancel = mo.ui.button(
         label="Stop after current epoch",
@@ -1882,6 +1867,19 @@ def _(cancelled):
 @app.cell
 def _(training_result):
     training_result
+    return
+
+
+@app.cell
+def _(training_result):
+    # save training_results to disk
+    with open(training_result["log_dir"] + "/training_result.json", "w") as f:
+        json.dump(training_result, f, indent=4)
+    return
+
+
+@app.cell
+def _():
     return
 
 
